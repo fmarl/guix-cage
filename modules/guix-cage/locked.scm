@@ -49,8 +49,7 @@
 ;;; build locked grants).  Their constructors check the parameters there.
 
 (define (build-module? name)
-  "Whether NAME is a module of the build side, such as those of other
-channels that define rules, like (guix-cage build locked rules)."
+  "Whether NAME is a build module, of this channel or another."
   (match name
     ((_ 'build _ ...) #t)
     (_ (guix-module-name? name))))
@@ -165,7 +164,6 @@ the arguments name."
   (build-rule '(guix-cage build locked rules) 'when-arguments
               (cons matchers (validate-rules rules))))
 
-;; What graphical programs need: the compositor, fonts and the GPUs
 (define %gui
   (all-rules %wayland %fonts %graphics))
 

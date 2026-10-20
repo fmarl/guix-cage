@@ -24,9 +24,10 @@ its arguments, and returns a `<grant>` of `(guix-cage build locked grants)`.
 The rules for files take a name below their directory and, optionally,
 permissions from `(guix-cage build locked grants)`, such as
 `(home-file ".local/bin/foo" '(read execute))` or
-`(absolute-file "/dev/kvm" '(read write ioctl))`.  `all-rules` combines
-rules, as `%gui` combines `%wayland`, `%fonts` and `%graphics`, and
-`when-arguments` only applies them if the arguments name URLs or files with
+`(absolute-file "/dev/kvm" '(read write ioctl))`.
+
+`all-rules` combines rules; `%gui` is `%wayland`, `%fonts` and `%graphics`.
+`when-arguments` only applies rules if the arguments name URLs or files with
 some extensions:
 
 ```scheme
@@ -35,8 +36,8 @@ some extensions:
 ```
 
 Rules for single programs belong to the channels of their packages.
-`define-locked-rules` defines rules for those of a build module, one named
-`(CHANNEL build …)` that only uses build modules itself:
+`define-locked-rules` defines rules for those of a build module, such as
+`(my-channel build locked-rules)`:
 
 ```scheme
 (define-locked-rules (my-channel build locked-rules)

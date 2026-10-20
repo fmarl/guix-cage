@@ -249,9 +249,7 @@ place, for files that the program passes to them."
 
 (define-syntax-rule (define-file-rule name valid? path default-permissions
                       create?)
-  "Define NAME, a constructor of rules granting permissions, by default
-DEFAULT-PERMISSIONS, on the PATH of a file.  With CREATE?, write permissions
-create it as a directory."
+  "With CREATE?, granting write creates the directory."
   (define* (name file #:optional (permissions default-permissions))
     (check-parameters 'name
                       (lambda (file permissions)
