@@ -48,7 +48,7 @@
     ,@(if (any (cut memq <> permissions) '(write make-socket))
           '()
           '(read-only))
-    ,@(if (memq 'execute permissions) '() '(no-exec))
+    ,@(if (any (cut memq <> permissions) '(execute load)) '() '(no-exec))
     ,@(if (memq 'ioctl permissions) '() '(no-dev))))
 
 (define (access-file-system access)

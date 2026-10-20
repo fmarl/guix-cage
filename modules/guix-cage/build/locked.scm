@@ -20,8 +20,6 @@
 (define %commands "/run/locked")
 
 (define (enter-sandbox sandbox)
-  "Confine this process by the other layers of SANDBOX, and execute its
-command."
   (when (sandbox-detached? sandbox)
     (setsid))
   (false-if-exception (chdir (sandbox-directory sandbox)))
@@ -60,8 +58,8 @@ that grants what RULES grant, with INIT, tini, as its first process."
   (call-with-error-reporting
    (lambda ()
      (let* ((arguments (cdr (command-line)))
-            ;; Rules read the environment of the host, and start helpers
-            ;; such as xdg-dbus-proxy outside the sandbox
+            ;; Outside the sandbox, rules read the environment of the host
+            ;; and start helpers such as xdg-dbus-proxy
             (grant (apply grant-append
                           (base-grant (list program init) executes?)
                           (map (cut <> (cons name arguments)) rules)))
@@ -70,7 +68,7 @@ that grants what RULES grant, with INIT, tini, as its first process."
         (status->exit-code
          (call-in-sandbox
           (sandbox grant
-                   ;; With the process outside, tini and the sandbox die
+                   ;; tini, and with it the sandbox, dies with this process
                    `(,init "-p" "SIGKILL" "--" ,command ,@arguments)
                    #:environment
                    (program-environment

@@ -15,8 +15,8 @@
 (define %entry-point-directories
   '("/applications" "/dbus-1/services" "/systemd/user"))
 
-;; References end at characters that file names rarely have.  One cut short
-;; counts as one to a program.
+;; References end at characters that file names rarely have.  A reference cut
+;; short counts as one to a program, so its file is left out.
 (define %file-name-end
   (char-set-complement
    (char-set-union (char-set-intersection char-set:letter+digit

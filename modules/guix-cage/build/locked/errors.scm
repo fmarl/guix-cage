@@ -34,6 +34,8 @@
 (define (call-with-error-reporting thunk)
   (define (report message)
     (format (current-error-port) "locked: ~a~%" message)
+    ;; In the sandbox, the process ends without flushing
+    (force-output (current-error-port))
     (exit 1))
 
   (with-exception-handler

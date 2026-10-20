@@ -17,8 +17,6 @@
             apply-resource-limits!
             terminal-injection-possible?))
 
-;;; What the process of the program gets before it executes it.
-
 (define (inherit-across-exec! port)
   ;; Revealed descriptors stay open across exec
   (port->fdes port))

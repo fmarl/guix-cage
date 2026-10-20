@@ -23,6 +23,8 @@
     (write write-file truncate make-reg make-dir make-sym make-sock make-fifo
            remove-file remove-dir refer)
     (execute execute)
+    ;; Landlock can't confine mapping files as code
+    (load)
     (ioctl ioctl-dev)
     (connect resolve-unix)
     (make-socket make-sock)))

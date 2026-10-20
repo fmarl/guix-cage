@@ -11,7 +11,7 @@
   #:use-module (srfi srfi-26)
   #:export (make-instance-directory))
 
-;;; Directories of the host for the sockets of the helpers of a sandbox.
+;;; Directories of the host that belong to a running sandbox.
 
 (define (process-alive? pid)
   (catch 'system-error

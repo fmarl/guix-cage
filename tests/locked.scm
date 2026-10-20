@@ -367,7 +367,8 @@ LOCKED_TESTS_ALLOW_SKIP is set."
 (test-assert "rules take valid parameters"
   (every gexp?
          (list (xdg-config "foo/bar.conf") (xdg-cache "foo")
-               (home-file ".foorc") (xdg-user-directory "DOWNLOAD" "Downloads")
+               (home-file ".foorc") (home-program ".local/bin/foo")
+               (xdg-user-directory "DOWNLOAD" "Downloads")
                (read-only "/") (read-write "/srv/data") (devices "/dev/kvm")
                (tcp-ports 80 443)
                (dbus "--talk=org.freedesktop.Notifications"
@@ -458,6 +459,21 @@ LOCKED_TESTS_ALLOW_SKIP is set."
                              '() (build:tcp-ports 443))
                             argument)))
        '("film.mkv" "https://example.org")))
+
+(test-equal "home-program and %shell grant executing"
+  `((,(string-append (getenv "HOME") "/.local/bin/foo") (read execute))
+    ("/bin/sh" (read execute)))
+  (append (accesses (granted (build:home-program ".local/bin/foo")))
+          (accesses (granted build:%shell))))
+
+(test-assert "%shared-temporary-directory is a directory of the host"
+  (call-with-runtime-directory
+   (lambda (runtime)
+     (let* ((grant (granted build:%shared-temporary-directory))
+            (directory (assoc-ref (grant-variables grant) "TMPDIR")))
+       (and (file-exists? directory)
+            (string-prefix? runtime directory)
+            (equal? `((,directory (read write))) (accesses grant)))))))
 
 (test-locked-error "build rules reject invalid parameters"
   (build:home-file ".."))
@@ -810,7 +826,7 @@ fails."
 
 (test-equal "base-grant without executes? only grants executing the programs"
   (let ((true (store-program "true")))
-    `(("/gnu/store" (read))
+    `(("/gnu/store" (read load))
       (,true (read execute))
       ,@(map (cut list <> '(read execute)) (elf-interpreters true))))
   (take (accesses (base-grant (list (store-program "true")) #f)) 3))
@@ -1196,13 +1212,15 @@ until then, as unshare needs."
   (exit-status-of (lambda ()
                     (execl guile "guile" "-c" (guile-script expression)))))
 
-(define* (locked-guile-status expression #:optional (rules '()))
+(define* (locked-guile-status expression #:optional (rules '())
+                              #:key (executes? #t))
   "Return 42 if Guile finds EXPRESSION true under run-locked with RULES, and
 43 otherwise."
   (exit-status-of (lambda ()
                     (set-program-arguments
                      (list "guile" "-c" (guile-script expression)))
-                    (run-locked guile rules #:init tini))))
+                    (run-locked guile rules #:init tini
+                                #:executes? executes?))))
 
 (define* (test-locked name expression #:optional (rules '()))
   "Test that EXPRESSION is only true outside of run-locked with RULES."
@@ -1272,6 +1290,20 @@ until then, as unshare needs."
                          #:return-type (@ (system foreign) int)
                          #:arg-types (list (@ (system foreign) unsigned-long)))))
        (>= (personality ,%addr-no-randomize) 0)))
+
+  (test-equal "run-locked only shows /bin/sh with %shell"
+    '(43 42)
+    (map (lambda (rules)
+           (locked-guile-status
+            '(false-if-exception (zero? (system* "/bin/sh" "-c" "exit 0")))
+            rules))
+         (list '() (list build:%shell))))
+
+  (test-equal "run-locked without executes? runs the program, but no others"
+    '(42 43)
+    (map (lambda (expression)
+           (locked-guile-status expression '() #:executes? #f))
+         (list #t `(false-if-exception (zero? (system* ,(store-program "true")))))))
 
   (test-locked "run-locked keeps the program from signalling others"
     `(false-if-exception (begin (kill ,(getpid) 0) #t)))

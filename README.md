@@ -1,6 +1,6 @@
 # guix-cage
-Runs the programs of Guix packages under Landlock and seccomp, so they only
-get the files, sockets and ports their rules allow.
+Runs the programs of Guix packages in a sandbox, so they only get the files,
+sockets and ports their rules allow.
 
 ```scheme
 (use-modules (gnu packages pdf)

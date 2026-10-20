@@ -14,8 +14,8 @@
   #:use-module (srfi srfi-26)
   #:export (dbus))
 
-;; Through them, programs could run others outside the sandbox, or read
-;; secrets or settings
+;; Through them, programs could run others outside the sandbox or read
+;; secrets
 (define %escaping-names
   '("org.freedesktop.systemd1" "org.freedesktop.Flatpak"
     "org.freedesktop.portal.Flatpak" "ca.desrt.dconf"

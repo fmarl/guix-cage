@@ -33,15 +33,12 @@
                 detached? directory environment fds resource-limits
                 deny-write-execute? command)
   sandbox?
-  ;; Namespaces
   (namespaces          sandbox-namespaces)
   (file-systems        sandbox-file-systems)
   (links               sandbox-links)           ;alist of links and targets
   (signals             sandbox-signals)         ;passed on to the sandbox
-  ;; Landlock and seccomp
   (landlock-rules      sandbox-landlock-rules)
   (syscall-allowances  sandbox-syscall-allowances)
-  ;; The process
   (detached?           sandbox-detached?)       ;from the terminal
   (directory           sandbox-directory)
   (environment         sandbox-environment)     ;NAME=VALUE strings

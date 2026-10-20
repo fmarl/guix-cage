@@ -46,7 +46,8 @@
   '(list                                        ;list directories
     read                                        ;read and list
     write                                       ;change, create and remove
-    execute
+    execute                                     ;run programs
+    load                                        ;load code, such as libraries
     ioctl                                       ;use devices
     connect                                     ;connect to Unix sockets
     make-socket))                               ;create Unix sockets

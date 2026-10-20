@@ -11,6 +11,7 @@
   #:use-module (guix-cage build locked errors)
   #:use-module (guix-cage build locked file-names)
   #:use-module (guix-cage build locked grants)
+  #:use-module (guix-cage build locked instances)
   #:use-module (guix-cage build locked xdg)
   #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-26)
@@ -25,6 +26,8 @@
             %pipewire
             %runtime-directory
             %temporary-directory
+            %shared-temporary-directory
+            %shell
             %argument-files
             %mail-directory
             xdg-config
@@ -32,6 +35,7 @@
             xdg-cache
             xdg-user-directory
             home-file
+            home-program
             read-only
             read-write
             devices
@@ -59,7 +63,7 @@
 executed."
   (if executes?
       (list (file-access "/gnu/store" '(read execute)))
-      (cons (read-access "/gnu/store")
+      (cons (file-access "/gnu/store" '(read load))
             (map (cut file-access <> '(read execute))
                  (delete-duplicates
                   (append programs (append-map elf-interpreters programs)))))))
@@ -153,8 +157,8 @@ playlists with one of PLAYLIST-EXTENSIONS."
       (directory-contains? other directory)))
 
 (define (user-directory name default)
-  "Return the XDG user directory NAME, or #f if it holds the home directory,
-or holds or is in that of configurations, secrets or system files."
+  "Return the XDG user directory NAME, or #f if it holds the home directory
+or overlaps those of configurations, secrets or the system."
   (let* ((home (normalize-file-name (getenv* "HOME")))
          (value (or (user-directory-setting name)
                     (string-append "$HOME/" default)))
@@ -194,9 +198,9 @@ or holds or is in that of configurations, secrets or system files."
 
 (define (%pipewire command-line)
   (socket-grant (runtime-path "pipewire-0")
-                 (lambda (socket)
-                   `(("PIPEWIRE_RUNTIME_DIR" . ,(dirname socket))
-                     ("PIPEWIRE_REMOTE" . ,(basename socket))))))
+                (lambda (socket)
+                  `(("PIPEWIRE_RUNTIME_DIR" . ,(dirname socket))
+                    ("PIPEWIRE_REMOTE" . ,(basename socket))))))
 
 (define (private-directory directory)
   (grant #:files (list (file-access directory '(read write) #:private? #t))))
@@ -207,6 +211,17 @@ or holds or is in that of configurations, secrets or system files."
 (define (%temporary-directory command-line)
   (grant-append (private-directory "/tmp")
                 (grant #:variables '(("TMPDIR" . "/tmp")))))
+
+(define (%shared-temporary-directory command-line)
+  "Grant a new temporary directory that programs outside see at the same
+place, for files that the program passes to them."
+  (let ((directory (make-instance-directory "tmp")))
+    (grant #:files (list (read-write-access directory))
+           #:variables `(("TMPDIR" . ,directory)))))
+
+(define (%shell command-line)
+  "Grant /bin/sh, through which system and popen run commands."
+  (grant #:files (list (file-access "/bin/sh" '(read execute)))))
 
 (define (%mail-directory command-line)
   (grant #:files (list (read-write-access (or (getenv "MAILDIR")
@@ -231,6 +246,9 @@ or holds or is in that of configurations, secrets or system files."
 
 (define-file-rule (home-file name) relative-file-name?
   (read-access (home-path name)))
+
+(define-file-rule (home-program name) relative-file-name?
+  (file-access (home-path name) '(read execute)))
 
 (define-file-rule (read-only file) canonical-file-name?
   (read-access file))

@@ -122,6 +122,8 @@ and each constructor of rules, such as (xdg-config name)."
   %pipewire
   %runtime-directory
   %temporary-directory
+  %shared-temporary-directory
+  %shell
   %argument-files
   %mail-directory
   (xdg-config name)
@@ -129,6 +131,7 @@ and each constructor of rules, such as (xdg-config name)."
   (xdg-cache name)
   (xdg-user-directory name default)
   (home-file name)
+  (home-program name)
   (read-only file)
   (read-write file)
   (devices . files)
@@ -206,8 +209,6 @@ POLICY, its options such as --talk=org.freedesktop.Notifications."
   (preserved-environment-variables
    locked-command-preserved-environment-variables
    (default %default-preserved-environment-variables))
-  ;; Without it, the program can't start others, but compromised code still
-  ;; can through the dynamic loader or a memfd
   (executes?            locked-command-executes?
                         (default #t))
   (deny-write-execute?  locked-command-deny-write-execute?
@@ -273,6 +274,6 @@ ORIGINAL."
     (synopsis (package-synopsis original))
     (description
      (string-append description
-                    "\n\nThis variant runs the program confined by Landlock \
-and seccomp."))
+                    "\n\nThis variant runs the program in a sandbox of user \
+namespaces, Landlock and seccomp."))
     (license (package-license original))))

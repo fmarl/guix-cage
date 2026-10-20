@@ -28,9 +28,8 @@
     (cut format <> "%Assuan%~%socket=~a~%" socket)))
 
 (define (%gnupg command-line)
-  "Grant a private GnuPG home with the public keyring, in which gpg uses the
-restricted socket of gpg-agent, which can decrypt but not export secret
-keys."
+  "Grant a private GnuPG home with the public keyring and the restricted
+socket of gpg-agent, which can't export secret keys."
   (let* ((home (gnupg-home))
          (directory (make-instance-directory "gnupg"))
          (public (filter file-exists?
