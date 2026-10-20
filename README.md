@@ -42,20 +42,3 @@ Each layer of the sandbox enforces the grants:
    kernel that programs rarely need.
 
 Without user namespaces, the program doesn't run.
-
-## Limits
-
-- Without `executes?`, the program can't start other programs, but
-  compromised code still can: through the dynamic loader, which runs any
-  readable ELF file, or from a memfd.  Setting `vm.memfd_noexec` to 2 closes
-  the latter.
-- `%pipewire` grants the whole PipeWire socket, with microphones, cameras and
-  screen casts.
-- Files in shared directories such as `xdg-cache`, `xdg-state` or
-  `xdg-user-directory` reach later instances and other programs, which may
-  trust them.
-- A non-default `GNUPGHOME` has its gpg-agent sockets in a directory named
-  after a hash of it, so `%gnupg` only finds the agent if the sockets are in
-  `GNUPGHOME` itself.
-- With ports, the program shares the network of the host, where only
-  Landlock confines it.
