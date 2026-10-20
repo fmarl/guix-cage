@@ -2,6 +2,7 @@
 ;;; Copyright © 2026 Florian Marrero Liestmann <f.m.liestmann@fx-ttr.de>
 
 (define-module (guix-cage build locked rules)
+  #:use-module ((guix build utils) #:select (mkdir-p))
   #:use-module (ice-9 binary-ports)
   #:use-module (ice-9 ftw)
   #:use-module (ice-9 match)
@@ -35,12 +36,10 @@
             xdg-cache
             xdg-user-directory
             home-file
-            home-program
-            read-only
-            read-write
-            devices
+            absolute-file
             tcp-ports
-            when-network-arguments))
+            all-rules
+            when-arguments))
 
 (define (segment-string bytes segment)
   (let ((string (make-bytevector (1- (elf-segment-filesz segment)))))
@@ -88,14 +87,23 @@ executed."
   (and (regexp-exec %url-regexp argument)
        (not (string-prefix? "file://" argument))))
 
-(define (network-arguments? arguments playlist-extensions)
-  (define (playlist? argument)
-    (let ((file (argument-file argument)))
-      (and file
-           (any (cut string-suffix-ci? <> file) playlist-extensions))))
+(define (matcher? matcher)
+  (match matcher
+    ('urls #t)
+    (('extensions extensions ..1) (every string? extensions))
+    (_ #f)))
 
+(define (argument-matches? argument matcher)
+  (match matcher
+    ('urls (url? argument))
+    (('extensions extensions ...)
+     (let ((file (argument-file argument)))
+       (and file
+            (any (cut string-suffix-ci? <> file) extensions))))))
+
+(define (arguments-match? arguments matchers)
   (any (lambda (argument)
-         (or (url? argument) (playlist? argument)))
+         (any (cut argument-matches? argument <>) matchers))
        arguments))
 
 (define (%argument-files command-line)
@@ -106,15 +114,25 @@ links, which others may have planted."
                                       (cut regular-file-access <> '(read))))
                              (cdr command-line))))
 
-(define (when-network-arguments playlist-extensions . rules)
-  "Return a rule that grants what RULES grant if the arguments name URLs, or
-playlists with one of PLAYLIST-EXTENSIONS."
-  (check-parameters 'when-network-arguments
-                    (cut every string? <>) playlist-extensions)
+(define (all-rules . rules)
+  "Return a rule that grants what RULES grant."
   (lambda (command-line)
-    (if (network-arguments? (cdr command-line) playlist-extensions)
-        (apply grant-append (map (cut <> command-line) rules))
-        %no-grant)))
+    (apply grant-append (map (cut <> command-line) rules))))
+
+(define (when-arguments matchers . rules)
+  "Return a rule that grants what RULES grant if an argument matches one of
+MATCHERS: urls, or (extensions EXTENSION ...) for the files the arguments
+name."
+  (check-parameters 'when-arguments
+                    (lambda (matchers)
+                      (and (pair? matchers) (list? matchers)
+                           (every matcher? matchers)))
+                    matchers)
+  (let ((rule (apply all-rules rules)))
+    (lambda (command-line)
+      (if (arguments-match? (cdr command-line) matchers)
+          (rule command-line)
+          %no-grant))))
 
 (define (user-directory-setting name)
   (let ((prefix (string-append "XDG_" name "_DIR=\""))
@@ -229,32 +247,27 @@ place, for files that the program passes to them."
                                           #:create? #t))
          #:variables (inherited-variables "MAILDIR")))
 
-(define-syntax-rule (define-file-rule (name parameter) valid? access)
-  (define (name parameter)
-    (check-parameters 'name valid? parameter)
+(define-syntax-rule (define-file-rule name valid? path default-permissions
+                      create?)
+  "Define NAME, a constructor of rules granting permissions, by default
+DEFAULT-PERMISSIONS, on the PATH of a file.  With CREATE?, write permissions
+create it as a directory."
+  (define* (name file #:optional (permissions default-permissions))
+    (check-parameters 'name
+                      (lambda (file permissions)
+                        (and (valid? file) (permissions? permissions)))
+                      file permissions)
     (lambda (command-line)
-      (grant #:files (list access)))))
+      (let ((file (path file)))
+        (when (and create? (memq 'write permissions))
+          (mkdir-p file))
+        (grant #:files (list (file-access file permissions)))))))
 
-(define-file-rule (xdg-config name) relative-file-name?
-  (read-access (config-path name)))
-
-(define-file-rule (xdg-state name) relative-file-name?
-  (read-write-access (state-path name) #:create? #t))
-
-(define-file-rule (xdg-cache name) relative-file-name?
-  (read-write-access (cache-path name) #:create? #t))
-
-(define-file-rule (home-file name) relative-file-name?
-  (read-access (home-path name)))
-
-(define-file-rule (home-program name) relative-file-name?
-  (file-access (home-path name) '(read execute)))
-
-(define-file-rule (read-only file) canonical-file-name?
-  (read-access file))
-
-(define-file-rule (read-write file) canonical-file-name?
-  (read-write-access file))
+(define-file-rule xdg-config relative-file-name? config-path '(read) #f)
+(define-file-rule xdg-state relative-file-name? state-path '(read write) #t)
+(define-file-rule xdg-cache relative-file-name? cache-path '(read write) #t)
+(define-file-rule home-file relative-file-name? home-path '(read) #f)
+(define-file-rule absolute-file canonical-file-name? identity '(read) #f)
 
 (define (user-directory-name? name)
   (and (string? name)
@@ -272,13 +285,6 @@ place, for files that the program passes to them."
     (match (user-directory name default)
       (#f %no-grant)
       (directory (grant #:files (list (read-write-access directory)))))))
-
-(define (devices . files)
-  (apply check-parameters 'devices
-         (lambda files (every canonical-file-name? files))
-         files)
-  (lambda (command-line)
-    (grant #:files (map (cut file-access <> '(read write ioctl)) files))))
 
 (define (port-number? port)
   (and (exact-integer? port) (<= 0 port 65535)))

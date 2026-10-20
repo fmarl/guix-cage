@@ -20,25 +20,25 @@ sockets and ports their rules allow.
 The rules are in `(guix-cage locked)`.  A rule is a G-expression of a
 procedure that takes the command line, a list of the name of the program and
 its arguments, and returns a `<grant>` of `(guix-cage build locked grants)`.
-`define-locked-rules` defines rules for those of a build module, like
-`(guix-cage build locked virtualization)`:
+
+The rules for files take a name below their directory and, optionally,
+permissions from `(guix-cage build locked grants)`, such as
+`(home-file ".local/bin/foo" '(read execute))` or
+`(absolute-file "/dev/kvm" '(read write ioctl))`.  `all-rules` combines
+rules, as `%gui` combines `%wayland`, `%fonts` and `%graphics`, and
+`when-arguments` only applies them if the arguments name URLs or files with
+some extensions:
 
 ```scheme
-(define-locked-rules (guix-cage build locked virtualization)
-  %qemu
-  %waypipe-client)
+(when-arguments '(urls (extensions ".m3u" ".m3u8"))
+  %dns (tcp-ports 80 443))
 ```
 
-## Layers
+Rules for single programs belong to the channels of their packages.
+`define-locked-rules` defines rules for those of a build module, one named
+`(CHANNEL build …)` that only uses build modules itself:
 
-Each layer of the sandbox enforces the grants:
-
-1. User namespaces: only the granted files exist, and the program has its
-   own processes, IPC, and network unless a rule grants ports.  tini is its
-   first process.
-2. Landlock: what the program may do with these files, and the ports it may
-   connect to.
-3. seccomp: no further namespaces, BPF, io_uring and other parts of the
-   kernel that programs rarely need.
-
-Without user namespaces, the program doesn't run.
+```scheme
+(define-locked-rules (my-channel build locked-rules)
+  %qemu)
+```

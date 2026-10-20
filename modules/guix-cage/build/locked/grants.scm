@@ -9,7 +9,9 @@
   #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-9)
   #:use-module (srfi srfi-26)
-  #:export (file-access
+  #:export (permissions?
+
+            file-access
             file-access?
             file-access-file
             file-access-permissions
@@ -34,6 +36,7 @@
             read-access
             read-write-access
             regular-file-access
+            socket-directory-access
             socket-grant))
 
 ;;; A rule is a procedure that takes the command line, a list of the name of
@@ -51,6 +54,12 @@
     ioctl                                       ;use devices
     connect                                     ;connect to Unix sockets
     make-socket))                               ;create Unix sockets
+
+(define (permissions? permissions)
+  "Whether PERMISSIONS is a non-empty list of known permissions."
+  (and (pair? permissions)
+       (list? permissions)
+       (every (cut memq <> %permissions) permissions)))
 
 (define-record-type <file-access>
   (make-file-access file permissions descriptor private?)
@@ -133,3 +142,7 @@ is a regular file and not a symbolic link, or #f."
       (grant #:files (list (file-access socket '(connect)))
              #:variables (variables socket))
       %no-grant))
+
+(define (socket-directory-access file)
+  "Grant creating the socket FILE in its directory."
+  (file-access (dirname file) '(make-socket)))

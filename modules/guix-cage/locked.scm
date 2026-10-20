@@ -13,7 +13,6 @@
   #:use-module (guix records)
   #:use-module (ice-9 exceptions)
   #:use-module (ice-9 match)
-  #:use-module (ice-9 receive)
   #:use-module (guix-cage build locked environment)
   #:use-module ((guix-cage build locked errors) #:select (locked-error?))
   #:use-module ((guix-cage build locked process)
@@ -26,7 +25,9 @@
   #:re-export (%default-preserved-environment-variables
                %default-resource-limits)
   #:export (define-locked-rules
-            when-network-arguments
+            all-rules
+            when-arguments
+            %gui
             dbus
 
             locked-command
@@ -48,8 +49,10 @@
 ;;; build locked grants).  Their constructors check the parameters there.
 
 (define (build-module? name)
+  "Whether NAME is a module of the build side, such as those of other
+channels that define rules, like (guix-cage build locked rules)."
   (match name
-    (('guix-cage 'build _ ...) #t)
+    ((_ 'build _ ...) #t)
     (_ (guix-module-name? name))))
 
 (define (build-procedure module name)
@@ -126,15 +129,12 @@ and each constructor of rules, such as (xdg-config name)."
   %shell
   %argument-files
   %mail-directory
-  (xdg-config name)
-  (xdg-state name)
-  (xdg-cache name)
+  (xdg-config name . permissions)
+  (xdg-state name . permissions)
+  (xdg-cache name . permissions)
   (xdg-user-directory name default)
-  (home-file name)
-  (home-program name)
-  (read-only file)
-  (read-write file)
-  (devices . files)
+  (home-file name . permissions)
+  (absolute-file file . permissions)
   (tcp-ports . ports))
 
 (define-locked-rules (guix-cage build locked gnupg)
@@ -153,15 +153,21 @@ and each constructor of rules, such as (xdg-config name)."
             rules)
   rules)
 
-(define (when-network-arguments . arguments)
-  "Return a rule granting what the rules among ARGUMENTS grant if the command
-line names URLs, or playlists with the #:playlists extensions."
-  (receive (extensions rules)
-      (match arguments
-        ((#:playlists extensions . rules) (values extensions rules))
-        (rules (values '() rules)))
-    (build-rule '(guix-cage build locked rules) 'when-network-arguments
-                (cons extensions (validate-rules rules)))))
+(define (all-rules . rules)
+  "Return a rule granting what RULES grant."
+  (build-rule '(guix-cage build locked rules) 'all-rules
+              (validate-rules rules)))
+
+(define (when-arguments matchers . rules)
+  "Return a rule granting what RULES grant if an argument of the command line
+matches one of MATCHERS: urls, or (extensions EXTENSION ...) for the files
+the arguments name."
+  (build-rule '(guix-cage build locked rules) 'when-arguments
+              (cons matchers (validate-rules rules))))
+
+;; What graphical programs need: the compositor, fonts and the GPUs
+(define %gui
+  (all-rules %wayland %fonts %graphics))
 
 (define (dbus . policy)
   "Return a rule granting a session bus that xdg-dbus-proxy filters by

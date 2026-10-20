@@ -32,9 +32,6 @@
              (system foreign)
              (system foreign-library))
 
-(define-locked-rules (guix-cage build locked virtualization)
-  %qemu)
-
 (define mpv-locked
   (make-locked-package
    mpv
@@ -202,9 +199,7 @@ LOCKED_TESTS_ALLOW_SKIP is set."
 (define-internal (guix-cage build locked syscalls)
   enforce-syscall-filter! restrict!)
 (define-internal (guix-cage build locked rules)
-  base-grant elf-interpreters user-directory argument-file network-arguments?)
-(define-internal (guix-cage build locked virtualization)
-  qemu-accesses waypipe-client-accesses)
+  base-grant elf-interpreters user-directory argument-file arguments-match?)
 (define-internal (guix-cage build locked wayland)
   wayland-string wayland-string-ref wayland-message)
 (define-internal (guix-cage build locked-package)
@@ -248,17 +243,28 @@ LOCKED_TESTS_ALLOW_SKIP is set."
   '((@ (guix-cage build locked rules) xdg-config) '"foo")
   (rule-sexp (xdg-config "foo")))
 
-(test-equal "rules nest in when-network-arguments"
-  '((@ (guix-cage build locked rules) when-network-arguments) '(".m3u")
+(test-equal "rules take optional permissions"
+  '((@ (guix-cage build locked rules) home-file) '"bin/foo" '(read execute))
+  (rule-sexp (home-file "bin/foo" '(read execute))))
+
+(test-equal "rules nest in when-arguments"
+  '((@ (guix-cage build locked rules) when-arguments)
+    '(urls (extensions ".m3u"))
     (@ (guix-cage build locked rules) %dns)
     ((@ (guix-cage build locked rules) tcp-ports) '80 '443))
   (rule-sexp
-   (when-network-arguments #:playlists '(".m3u") %dns (tcp-ports 80 443))))
+   (when-arguments '(urls (extensions ".m3u")) %dns (tcp-ports 80 443))))
 
 (test-assert "rules import their build modules"
-  (every (cut member <> (gexp-modules (when-network-arguments %qemu)))
+  (every (cut member <> (gexp-modules (all-rules %gnupg %wayland)))
          '((guix-cage build locked rules)
-           (guix-cage build locked virtualization))))
+           (guix-cage build locked gnupg)
+           (guix-cage build locked wayland))))
+
+(test-equal "rules import the build modules of other channels"
+  '(#t #t #f)
+  (map (@@ (guix-cage locked) build-module?)
+       '((guix-microvm build locked-rules) (guix build utils) (guix-cage locked))))
 
 (test-equal "default resource limits forbid core dumps and priorities"
   '((core . 0) (rtprio . 0) (nice . 0))
@@ -322,9 +328,13 @@ LOCKED_TESTS_ALLOW_SKIP is set."
     (program "/bin/true")
     (rules (list "/home"))))
 
-(test-rejects "when-network-arguments rejects rules that aren't G-expressions"
+(test-rejects "when-arguments rejects rules that aren't G-expressions"
   "rule is not a G-expression"
-  (when-network-arguments "/home"))
+  (when-arguments '(urls) "/home"))
+
+(test-rejects "all-rules rejects rules that aren't G-expressions"
+  "rule is not a G-expression"
+  (all-rules %dns "/home"))
 
 (test-rejects "define-locked-rules rejects unknown rules"
   "defines no rule"
@@ -347,13 +357,19 @@ LOCKED_TESTS_ALLOW_SKIP is set."
     . ,(lambda () (xdg-user-directory "DOWNLOAD" "../x")))
    ("unknown user directories"
     . ,(lambda () (xdg-user-directory "DOWNLOAD\"" "Downloads")))
-   ("relative files" . ,(lambda () (read-only "etc")))
-   ("files leading out" . ,(lambda () (read-write "/tmp/../etc")))
-   ("relative devices" . ,(lambda () (devices "/dev/kvm" "kvm")))
+   ("relative files" . ,(lambda () (absolute-file "etc")))
+   ("files leading out" . ,(lambda () (absolute-file "/tmp/../etc")))
+   ("unknown permissions" . ,(lambda () (xdg-config "foo" '(fly))))
+   ("no permissions" . ,(lambda () (home-file ".foorc" '())))
+   ("permissions that aren't lists"
+    . ,(lambda () (absolute-file "/dev/kvm" 'read)))
    ("ports beyond 65535" . ,(lambda () (tcp-ports 443 65536)))
    ("ports that aren't numbers" . ,(lambda () (tcp-ports "443")))
-   ("playlist extensions that aren't strings"
-    . ,(lambda () (when-network-arguments #:playlists '(m3u) %dns)))
+   ("no matchers" . ,(lambda () (when-arguments '() %dns)))
+   ("unknown matchers" . ,(lambda () (when-arguments '(files) %dns)))
+   ("extensions that aren't strings"
+    . ,(lambda () (when-arguments '((extensions m3u)) %dns)))
+   ("no extensions" . ,(lambda () (when-arguments '((extensions)) %dns)))
    ("malformed D-Bus policies"
     . ,(lambda () (dbus "talk=org.freedesktop.Notifications")))
    ,@(map (lambda (option)
@@ -367,10 +383,13 @@ LOCKED_TESTS_ALLOW_SKIP is set."
 (test-assert "rules take valid parameters"
   (every gexp?
          (list (xdg-config "foo/bar.conf") (xdg-cache "foo")
-               (home-file ".foorc") (home-program ".local/bin/foo")
+               (xdg-state "foo" '(read))
+               (home-file ".foorc") (home-file ".local/bin/foo" '(read execute))
                (xdg-user-directory "DOWNLOAD" "Downloads")
-               (read-only "/") (read-write "/srv/data") (devices "/dev/kvm")
-               (tcp-ports 80 443)
+               (absolute-file "/") (absolute-file "/srv/data" '(read write))
+               (absolute-file "/dev/kvm" '(read write ioctl))
+               (tcp-ports 80 443) (all-rules) %gui
+               (when-arguments '(urls (extensions ".m3u")) %dns)
                (dbus "--talk=org.freedesktop.Notifications"
                      "--own=org.mpris.MediaPlayer2.mpv.*"
                      "--call=org.freedesktop.portal.Desktop=org.freedesktop.portal.OpenURI.*"))))
@@ -433,38 +452,66 @@ LOCKED_TESTS_ALLOW_SKIP is set."
        '("film.mkv" "file:///film.mkv" "--playlist=list.m3u" "-v"
          "--volume")))
 
-(test-assert "network-arguments?, local files"
-  (not (network-arguments? '("film.mkv" "file:///film.mkv" "-v") '())))
+(test-assert "arguments-match?, local files"
+  (not (arguments-match? '("film.mkv" "file:///film.mkv" "-v") '(urls))))
 
-(test-assert "network-arguments?, URL"
-  (network-arguments? '("https://example.org/film.mkv") '()))
+(test-assert "arguments-match?, URL"
+  (arguments-match? '("https://example.org/film.mkv") '(urls)))
 
-(test-assert "network-arguments?, playlist"
-  (network-arguments? '("--playlist=list.M3U8") '(".m3u8")))
+(test-assert "arguments-match?, extension"
+  (arguments-match? '("--playlist=list.M3U8") '((extensions ".m3u8"))))
 
-(test-assert "network-arguments?, playlists not given"
-  (not (network-arguments? '("list.m3u8") '())))
+(test-assert "arguments-match?, extension of a file:// URI"
+  (arguments-match? '("file:///list.m3u") '(urls (extensions ".m3u"))))
 
-(test-assert "network-arguments?, URL in an option"
-  (not (network-arguments? '("--script-opts=x=https://example.org") '())))
+(test-assert "arguments-match?, extensions not given"
+  (not (arguments-match? '("list.m3u8") '(urls))))
+
+(test-assert "arguments-match?, URL in an option"
+  (not (arguments-match? '("--script-opts=x=https://example.org") '(urls))))
 
 (test-equal "tcp-ports"
   '((143 tcp) (993 tcp))
   (accesses (granted (build:tcp-ports 143 993))))
 
-(test-equal "when-network-arguments"
-  '(() ((443 tcp)))
-  (map (lambda (argument)
-         (accesses (granted (build:when-network-arguments
-                             '() (build:tcp-ports 443))
-                            argument)))
-       '("film.mkv" "https://example.org")))
+(test-equal "all-rules"
+  '(("/bin/sh" (read execute)) (143 tcp))
+  (accesses (granted (build:all-rules (build:tcp-ports 143) build:%shell))))
 
-(test-equal "home-program and %shell grant executing"
+(test-equal "when-arguments"
+  '(() ((443 tcp)) ((443 tcp)))
+  (map (lambda (argument)
+         (accesses (granted (build:when-arguments
+                             '(urls (extensions ".m3u"))
+                             (build:tcp-ports 443))
+                            argument)))
+       '("film.mkv" "https://example.org" "list.m3u")))
+
+(test-equal "file rules grant their permissions"
   `((,(string-append (getenv "HOME") "/.local/bin/foo") (read execute))
-    ("/bin/sh" (read execute)))
-  (append (accesses (granted (build:home-program ".local/bin/foo")))
-          (accesses (granted build:%shell))))
+    ("/dev/kvm" (read write ioctl))
+    ("/srv/data" (read)))
+  (append-map (lambda (rule)
+                (accesses (granted rule)))
+              (list (build:home-file ".local/bin/foo" '(read execute))
+                    (build:absolute-file "/dev/kvm" '(read write ioctl))
+                    (build:absolute-file "/srv/data"))))
+
+(test-equal "xdg-state only creates its directory to write it"
+  '(#f #t)
+  (call-with-temporary-directory
+   (lambda (directory)
+     (call-with-environment-variables `(("XDG_STATE_HOME" . ,directory))
+       (lambda ()
+         (map (lambda (name permissions)
+                (granted (build:xdg-state name permissions))
+                (file-exists? (string-append directory "/" name)))
+              '("read" "write")
+              '((read) (read write))))))))
+
+(test-equal "%shell grants executing /bin/sh"
+  '(("/bin/sh" (read execute)))
+  (accesses (granted build:%shell)))
 
 (test-assert "%shared-temporary-directory is a directory of the host"
   (call-with-runtime-directory
@@ -1137,73 +1184,6 @@ until then, as unshare needs."
                            (keyctl ,%keyctl-get-keyring-id
                                    ,%key-spec-session-keyring)
                            (socket ,AF_INET ,SOCK_DGRAM ,%ipproto-icmp)))))
-
-(test-equal "qemu-accesses, missing file"
-  '()
-  (qemu-accesses '("-append" "rdinit=/init")))
-
-(test-equal "qemu-accesses, files only in file options"
-  '(() () (("/dev/null" (read write ioctl))))
-  (map (compose (cut map access->list <>) qemu-accesses)
-       '(("-append" "root=/dev/null")
-         ("-device" "root=/dev/null")
-         ("-drive" "file=/dev/null"))))
-
-(test-equal "qemu-accesses, server socket"
-  '(("/tmp" (make-socket)))
-  (map access->list
-       (qemu-accesses
-        '("-chardev" "socket,id=m,path=/tmp/qmp.sock,server=on"))))
-
-(test-equal "qemu-accesses, read-only file"
-  '((read))
-  (call-with-temporary-directory
-   (lambda (directory)
-     (let ((image (string-append directory "/disk.img")))
-       (write-file image "")
-       (map (compose cadr access->list)
-            (qemu-accesses
-             (list (string-append "file=" image ",readonly=on"))))))))
-
-(test-assert "qemu-accesses, client socket"
-  (call-with-temporary-directory
-   (lambda (directory)
-     (let ((path (unix-socket (string-append directory "/s"))))
-       (equal? (map access->list
-                    (qemu-accesses
-                     (list (string-append "socket,id=c,path=" path))))
-               `((,path (connect))))))))
-
-(test-assert "qemu-accesses, unix: prefix"
-  (call-with-temporary-directory
-   (lambda (directory)
-     (let ((path (unix-socket (string-append directory "/s"))))
-       (equal? (map access->list
-                    (qemu-accesses (list "-qmp" (string-append "unix:" path))))
-               `((,path (connect))))))))
-
-(test-assert "qemu-accesses, stale server socket"
-  (call-with-temporary-directory
-   (lambda (directory)
-     (let ((path (unix-socket (string-append directory "/s"))))
-       (and (equal? (map access->list
-                         (qemu-accesses
-                          (list (string-append "socket,id=m,path=" path
-                                               ",server=on"))))
-                    `((,directory (make-socket))))
-            (not (file-exists? path)))))))
-
-(test-equal "waypipe-client-accesses"
-  `((("/run/vm" (make-socket))) (("/run/vm" (make-socket)))
-    (("/run/vm" (make-socket))) ((,(getcwd) (make-socket))) () ())
-  (map (compose (cut map access->list <>) waypipe-client-accesses)
-       '(("--socket" "/run/vm/w.sock" "--no-gpu" "client")
-         ("-s" "/run/vm/w.sock" "client")
-         ("--socket=/run/vm/w.sock" "client")
-         ("--socket" "w.sock" "client")
-         ("--socket" "/run/vm/w.sock" "server" "--" "foot")
-         ("client"))))
-
 (define (guile-script expression)
   (object->string `(exit (if ,expression 42 43))))
 
