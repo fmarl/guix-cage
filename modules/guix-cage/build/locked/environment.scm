@@ -2,10 +2,11 @@
 ;;; Copyright © 2026 Florian Marrero Liestmann <f.m.liestmann@fx-ttr.de>
 
 (define-module (guix-cage build locked environment)
+  #:use-module (ice-9 match)
   #:use-module (srfi srfi-1)
   #:export (%default-preserved-environment-variables
             preserved-variable?
-            preserve-environment!))
+            program-environment))
 
 (define %default-preserved-environment-variables
   '("HOME" "USER" "LOGNAME" "SHELL" "PATH" "LANG" "LANGUAGE" "LC_*"
@@ -23,8 +24,20 @@
              (string=? pattern name)))
        preserved))
 
-(define (preserve-environment! preserved)
-  (environ (filter (lambda (entry)
-                     (preserved-variable? (car (string-split entry #\=))
-                                          preserved))
-                   (environ))))
+(define (entry-name entry)
+  (car (string-split entry #\=)))
+
+(define (program-environment preserved variables)
+  "Return the variables of this process that PRESERVED matches, and
+VARIABLES, an alist that overrides them, as NAME=VALUE strings."
+  (append (filter (lambda (entry)
+                    (let ((name (entry-name entry)))
+                      (and (preserved-variable? name preserved)
+                           (not (assoc name variables)))))
+                  (environ))
+          (map (match-lambda
+                 ((name . value) (string-append name "=" value)))
+               ;; The last of several values wins
+               (reverse (delete-duplicates (reverse variables)
+                                           (lambda (a b)
+                                             (string=? (car a) (car b))))))))

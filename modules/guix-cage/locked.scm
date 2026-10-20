@@ -2,6 +2,7 @@
 ;;; Copyright © 2026 Florian Marrero Liestmann <f.m.liestmann@fx-ttr.de>
 
 (define-module (guix-cage locked)
+  #:use-module ((gnu packages containers) #:select (tini))
   #:use-module (gnu packages glib)
   #:use-module (guix build-system trivial)
   #:use-module (guix diagnostics)
@@ -10,39 +11,29 @@
   #:use-module (guix modules)
   #:use-module (guix packages)
   #:use-module (guix records)
+  #:use-module (ice-9 exceptions)
   #:use-module (ice-9 match)
   #:use-module (ice-9 receive)
   #:use-module (guix-cage build locked environment)
-  #:use-module ((guix-cage build locked kinds)
-                #:select (module-rule-kind-names))
+  #:use-module ((guix-cage build locked errors) #:select (locked-error?))
   #:use-module ((guix-cage build locked process)
                 #:select (%default-resource-limits))
   #:use-module ((guix-cage build locked syscalls)
                 #:select (%syscall-groups))
   #:use-module (guix-cage packages guile-xyz)
   #:use-module (srfi srfi-1)
-  #:use-module (srfi srfi-9)
   #:use-module (srfi srfi-26)
   #:re-export (%default-preserved-environment-variables
                %default-resource-limits)
-  #:export (locked-rule?
-            locked-rule-module
-            locked-rule-kind
-            locked-rule-parameters
-            locked-rule->spec
-            define-locked-rules
+  #:export (define-locked-rules
             when-network-arguments
+            dbus
 
             locked-command
             locked-command?
             locked-command-name
             locked-command-program
             locked-command-rules
-            locked-command-wayland
-            locked-command-pipewire?
-            locked-command-dbus
-            locked-command-runtime-directory?
-            locked-command-temporary-directory?
             locked-command-environment
             locked-command-preserved-environment-variables
             locked-command-executes?
@@ -53,80 +44,84 @@
 
             make-locked-package))
 
-(define-record-type <locked-rule>
-  (make-locked-rule module kind parameters)
-  locked-rule?
-  (module     locked-rule-module)
-  (kind       locked-rule-kind)
-  (parameters locked-rule-parameters))
+;;; Rules are G-expressions of the rules of the build side, see (guix-cage
+;;; build locked grants).  Their constructors check the parameters there.
 
-(define (locked-rule->spec rule)
-  (cons* (locked-rule-module rule)
-         (locked-rule-kind rule)
-         (map (lambda (parameter)
-                (if (locked-rule? parameter)
-                    (locked-rule->spec parameter)
-                    parameter))
-              (locked-rule-parameters rule))))
+(define (build-module? name)
+  (match name
+    (('guix-cage 'build _ ...) #t)
+    (_ (guix-module-name? name))))
 
-(define (locked-rule-modules rule)
-  (cons (locked-rule-module rule)
-        (append-map locked-rule-modules
-                    (filter locked-rule? (locked-rule-parameters rule)))))
+(define (build-procedure module name)
+  (or (and=> (false-if-exception (resolve-interface module))
+             (lambda (interface)
+               (and=> (module-variable interface name) variable-ref)))
+      (raise-exception
+       (formatted-message (G_ "~a defines no rule ~a") module name))))
 
-(define (validate-kinds module kinds)
-  (let ((known (module-rule-kind-names module)))
-    (for-each (lambda (kind)
-                (unless (memq kind known)
-                  (raise-exception
-                   (formatted-message (G_ "~a defines no kind of rules ~a")
-                                      module kind))))
-              kinds)))
+(define (check-build-rule rule parameters)
+  "Apply RULE, a constructor of the build side, to PARAMETERS to check
+them."
+  (with-exception-handler
+      (lambda (exception)
+        (raise-exception
+         (if (locked-error? exception)
+             (formatted-message (G_ "~a") (exception-message exception))
+             exception)))
+    (lambda ()
+      (apply rule parameters))
+    #:unwind? #t))
 
-(define-syntax define-locked-rules
-  (lambda (s)
-    "Define and export a constructor of <locked-rule> for each form, such as
-%dns or (xdg-config name)."
-    (define (kind name)
-      (datum->syntax name
-                     (string->symbol
-                      (string-trim (symbol->string (syntax->datum name))
-                                   #\%))))
+(define (parameter-gexp parameter)
+  "Return the code of PARAMETER: rules stay code, other values are data."
+  (if (gexp? parameter)
+      parameter
+      #~'#$parameter))
 
-    (define (form-name form)
-      (syntax-case form ()
-        ((name . _) #'name)
-        (name #'name)))
+(define* (build-rule module name #:optional parameters)
+  "Return the rule NAME of the build module MODULE, or, given PARAMETERS,
+the rule that the constructor NAME returns for them."
+  (let ((procedure (build-procedure module name)))
+    (when parameters
+      (check-build-rule procedure parameters))
+    (with-imported-modules (source-module-closure (list module)
+                                                  #:select? build-module?)
+      (if parameters
+          #~((@ #$module #$name) #$@(map parameter-gexp parameters))
+          #~(@ #$module #$name)))))
 
-    ;; (guix packages) replaces define-public with one without rest arguments
-    (define (definition module form)
-      (syntax-case form ()
-        ((name parameter ...)
-         #`(define (name parameter ...)
-             (make-locked-rule '#,module '#,(kind #'name)
-                               (list parameter ...))))
-        ((name parameter ... . rest)
-         #`(define (name parameter ... . rest)
-             (make-locked-rule '#,module '#,(kind #'name)
-                               (cons* parameter ... rest))))
-        (name
-         #`(define name
-             (make-locked-rule '#,module '#,(kind #'name) '())))))
+(define-syntax define-locked-rule
+  (syntax-rules ()
+    ((_ module (name parameter ...))
+     (begin
+       (define (name parameter ...)
+         (build-rule 'module 'name (list parameter ...)))
+       (export name)))
+    ((_ module (name parameter ... . rest))
+     (begin
+       (define (name parameter ... . rest)
+         (build-rule 'module 'name (cons* parameter ... rest)))
+       (export name)))
+    ((_ module name)
+     (begin
+       (define name
+         (build-rule 'module 'name))
+       (export name)))))
 
-    (syntax-case s ()
-      ((_ module form ...)
-       #`(begin
-           (validate-kinds 'module
-                           '#,(map kind (map form-name #'(form ...))))
-           #,@(map (cut definition #'module <>) #'(form ...))
-           (export #,@(map form-name #'(form ...))))))))
+(define-syntax-rule (define-locked-rules module form ...)
+  "Define and export a rule for each rule of the build MODULE, such as %dns,
+and each constructor of rules, such as (xdg-config name)."
+  (begin
+    (define-locked-rule module form) ...))
 
 (define-locked-rules (guix-cage build locked rules)
   %graphics
   %fonts
   %shm
   %dns
-  %gnupg
+  %pipewire
+  %runtime-directory
+  %temporary-directory
   %argument-files
   %mail-directory
   (xdg-config name)
@@ -139,34 +134,38 @@
   (devices . files)
   (tcp-ports . ports))
 
+(define-locked-rules (guix-cage build locked gnupg)
+  %gnupg)
+
+(define-locked-rules (guix-cage build locked wayland)
+  %wayland
+  %full-wayland)
+
 (define (validate-rules rules)
   (for-each (lambda (rule)
-              (unless (locked-rule? rule)
+              (unless (gexp? rule)
                 (raise-exception
-                 (formatted-message (G_ "not a <locked-rule>: ~s") rule)))
-              (validate-kinds (locked-rule-module rule)
-                              (list (locked-rule-kind rule))))
+                 (formatted-message (G_ "rule is not a G-expression: ~s")
+                                    rule))))
             rules)
   rules)
 
 (define (when-network-arguments . arguments)
-  "Return a rule applying the rules among ARGUMENTS if the command line names
-URLs or playlists with the #:playlists extensions."
+  "Return a rule granting what the rules among ARGUMENTS grant if the command
+line names URLs, or playlists with the #:playlists extensions."
   (receive (extensions rules)
       (match arguments
         ((#:playlists extensions . rules) (values extensions rules))
         (rules (values '() rules)))
-    (make-locked-rule '(guix-cage build locked rules)
-                      'when-network-arguments
-                      (cons extensions (validate-rules rules)))))
+    (build-rule '(guix-cage build locked rules) 'when-network-arguments
+                (cons extensions (validate-rules rules)))))
 
-(define (validate-wayland value)
-  (match value
-    ((or #f 'restricted 'full) value)
-    (_ (raise-exception
-        (formatted-message
-         (G_ "Wayland access is not #f, 'restricted or 'full: ~s")
-         value)))))
+(define (dbus . policy)
+  "Return a rule granting a session bus that xdg-dbus-proxy filters by
+POLICY, its options such as --talk=org.freedesktop.Notifications."
+  (build-rule '(guix-cage build locked dbus) 'dbus
+              (cons (file-append xdg-dbus-proxy "/bin/xdg-dbus-proxy")
+                    policy)))
 
 (define %resources
   '(as core cpu data fsize memlock msgqueue nice nofile nproc rss rtprio
@@ -199,25 +198,16 @@ URLs or playlists with the #:playlists extensions."
   locked-command?
   (name                 locked-command-name)    ;string
   (program              locked-command-program) ;file-like
-  (rules                locked-command-rules    ;list of <locked-rule>
+  (rules                locked-command-rules    ;list of G-expressions
                         (default '())
                         (sanitize validate-rules))
-  (wayland              locked-command-wayland  ;#f | 'restricted | 'full
-                        (default #f)
-                        (sanitize validate-wayland))
-  (pipewire?            locked-command-pipewire?
-                        (default #f))
-  (dbus                 locked-command-dbus     ;#f or xdg-dbus-proxy options
-                        (default #f))
-  (runtime-directory?   locked-command-runtime-directory?
-                        (default #f))
-  (temporary-directory? locked-command-temporary-directory?
-                        (default #f))
   (environment          locked-command-environment ;alist
                         (default '()))
   (preserved-environment-variables
    locked-command-preserved-environment-variables
    (default %default-preserved-environment-variables))
+  ;; Without it, the program can't start others, but compromised code still
+  ;; can through the dynamic loader or a memfd
   (executes?            locked-command-executes?
                         (default #t))
   (deny-write-execute?  locked-command-deny-write-execute?
@@ -229,49 +219,28 @@ URLs or playlists with the #:playlists extensions."
                         (default '())
                         (sanitize validate-syscall-allowances)))
 
-(define (locked-command-options command)
-  (match-record command <locked-command>
-    (name wayland pipewire? dbus runtime-directory? temporary-directory?
-          environment preserved-environment-variables executes?
-          deny-write-execute? resource-limits syscall-allowances)
-    (list #:name name
-          #:wayland wayland
-          #:pipewire? pipewire?
-          #:dbus dbus
-          #:runtime-directory? runtime-directory?
-          #:temporary-directory? temporary-directory?
-          #:environment environment
-          #:preserved-environment-variables preserved-environment-variables
-          #:executes? executes?
-          #:deny-write-execute? deny-write-execute?
-          #:resource-limits resource-limits
-          #:syscall-allowances syscall-allowances)))
-
-(define (build-module? name)
-  (match name
-    (('guix-cage 'build _ ...) #t)
-    (('guix 'build 'utils) #t)
-    (_ #f)))
-
 (define (locked-command-program-file command)
-  (program-file
-   (locked-command-name command)
-   (with-extensions (list guile-landlock guile-seccomp)
-     (with-imported-modules (source-module-closure
-                             (delete-duplicates
-                              (cons '(guix-cage build locked)
-                                    (append-map locked-rule-modules
-                                                (locked-command-rules
-                                                 command))))
-                             #:select? build-module?)
-       #~(begin
-           (use-modules (guix-cage build locked))
-           (apply run-locked #$(locked-command-program command)
-                  '#$(map locked-rule->spec (locked-command-rules command))
-                  #:dbus-proxy #$(and (locked-command-dbus command)
-                                      (file-append xdg-dbus-proxy
-                                                   "/bin/xdg-dbus-proxy"))
-                  '#$(locked-command-options command)))))))
+  (match-record command <locked-command>
+    (name program rules environment preserved-environment-variables
+          executes? deny-write-execute? resource-limits syscall-allowances)
+    (program-file
+     name
+     (with-extensions (list guile-landlock guile-seccomp)
+       (with-imported-modules (source-module-closure
+                               '((guix-cage build locked))
+                               #:select? build-module?)
+         #~(begin
+             (use-modules (guix-cage build locked))
+             (run-locked #$program (list #$@rules)
+                         #:name #$name
+                         #:init #$(file-append tini "/bin/tini")
+                         #:environment '#$environment
+                         #:preserved-environment-variables
+                         '#$preserved-environment-variables
+                         #:executes? #$executes?
+                         #:deny-write-execute? #$deny-write-execute?
+                         #:resource-limits '#$resource-limits
+                         #:syscall-allowances '#$syscall-allowances)))))))
 
 (define* (make-locked-package original commands
                               #:key (name (string-append (package-name original)

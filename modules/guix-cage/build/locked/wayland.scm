@@ -2,19 +2,19 @@
 ;;; Copyright © 2026 Florian Marrero Liestmann <f.m.liestmann@fx-ttr.de>
 
 (define-module (guix-cage build locked wayland)
-  #:autoload (landlock) (landlock-path)
   #:use-module (ice-9 binary-ports)
   #:use-module (ice-9 match)
   #:use-module (rnrs bytevectors)
   #:use-module (guix-cage build locked errors)
-  #:use-module (guix-cage build locked files)
+  #:use-module (guix-cage build locked instances)
   #:use-module (guix-cage build locked process)
+  #:use-module (guix-cage build locked xdg)
   #:use-module (guix-cage build locked grants)
   #:use-module (srfi srfi-1)
   #:use-module (system foreign)
   #:use-module (system foreign-library)
-  #:export (share-wayland!
-            share-wayland-context!))
+  #:export (%wayland
+            %full-wayland))
 
 (define (wayland-socket)
   (let ((wayland-display (or (getenv "WAYLAND_DISPLAY") "wayland-0")))
@@ -22,9 +22,9 @@
         wayland-display
         (runtime-path wayland-display))))
 
-(define (share-wayland!)
+(define (%full-wayland command-line)
   "Grant the whole compositor, as layer shells such as panels need."
-  (share-socket! (wayland-socket)
+  (socket-grant (wayland-socket)
                  (lambda (socket)
                    `(("WAYLAND_DISPLAY" . ,socket)))))
 
@@ -43,10 +43,14 @@
     result))
 
 (define (wayland-string-ref bytes offset)
-  (let* ((size (1- (bytevector-u32-native-ref bytes offset)))
-         (result (make-bytevector size)))
-    (bytevector-copy! bytes (+ offset 4) result 0 size)
-    (utf8->string result)))
+  (let ((size (bytevector-u32-native-ref bytes offset)))
+    ;; The size counts the null byte, so only null strings have none
+    (unless (and (positive? size)
+                 (<= (+ offset 4 size) (bytevector-length bytes)))
+      (raise-locked-error "the compositor sent a malformed string"))
+    (let ((result (make-bytevector (1- size))))
+      (bytevector-copy! bytes (+ offset 4) result 0 (1- size))
+      (utf8->string result))))
 
 (define (wayland-message object opcode . arguments)
   (let* ((body (map (lambda (argument)
@@ -238,10 +242,11 @@ on CALLBACK."
                        (lambda (object opcode body result) result)
                        #t)))
 
-(define (share-wayland-context! name)
+(define (%wayland command-line)
   "Grant a socket on which the compositor hides privileged protocols, such
 as screen capture, from the program."
-  (let ((compositor (wayland-socket)))
+  (let ((compositor (wayland-socket))
+        (name (first command-line)))
     (if (file-exists? compositor)
         (let* ((directory (make-instance-directory "wayland-context"))
                (listen-path (string-append directory "/wayland-0"))
@@ -251,7 +256,7 @@ as screen capture, from the program."
             ((read-end . write-end)
              (create-security-context! connection listener read-end name)
              (for-each close-port (list connection listener read-end))
-             (grant (list (landlock-path directory '(resolve-unix)))
-                    `(("WAYLAND_DISPLAY" . ,listen-path))
-                    (list (inherit-across-exec! write-end))))))
+             (grant #:files (list (file-access directory '(connect)))
+                    #:variables `(("WAYLAND_DISPLAY" . ,listen-path))
+                    #:fds (list (inherit-across-exec! write-end))))))
         %no-grant)))

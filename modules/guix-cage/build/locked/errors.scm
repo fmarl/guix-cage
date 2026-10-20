@@ -6,6 +6,7 @@
   #:use-module (ice-9 match)
   #:export (locked-error?
             raise-locked-error
+            check-parameters
             call-with-error-reporting))
 
 (define-exception-type &locked-error &error
@@ -17,6 +18,10 @@
    (make-exception (make-locked-error)
                    (make-exception-with-message
                     (apply format #f message arguments)))))
+
+(define (check-parameters rule valid? . parameters)
+  (unless (apply valid? parameters)
+    (raise-locked-error "invalid parameters of ~a: ~s" rule parameters)))
 
 (define (system-error? exception)
   (eq? 'system-error (exception-kind exception)))
