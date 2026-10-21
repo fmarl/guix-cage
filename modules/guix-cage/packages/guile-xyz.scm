@@ -11,8 +11,8 @@
   #:use-module ((guix licenses) #:prefix license:))
 
 (define-public guile-landlock
-  (let ((commit "9c11f1be2ab61df95f3ab932c66039067fa5e5d1")
-        (revision "1"))
+  (let ((commit "087f63232323c1952a4026413001a9751c9ccbcb")
+        (revision "2"))
     (package
       (name "guile-landlock")
       (version (git-version "0.1.0" revision commit))
@@ -24,7 +24,7 @@
                (commit commit)))
          (file-name (git-file-name name version))
          (sha256
-          (base32 "1w9fjv6xbgq4jxx8zwav737w8lmfli70vy6l5afvyc9pf7rsppds"))))
+          (base32 "0b6r5dc2kn8bxfp5nk9nmacgdp1i043x89yk4q70rliixi9691ah"))))
       (build-system guile-build-system)
       (arguments
        (list
@@ -38,8 +38,8 @@ programs and the programs they execute using Linux's Landlock.")
       (license license:gpl3+))))
 
 (define-public guile-seccomp
-  (let ((commit "82bc5b711cc41a2375e963b97f457e83db2d468d")
-        (revision "0"))
+  (let ((commit "847076d531af524e09c01417d371f4f4008cd537")
+        (revision "1"))
     (package
       (name "guile-seccomp")
       (version (git-version "0.1.0" revision commit))
@@ -51,7 +51,7 @@ programs and the programs they execute using Linux's Landlock.")
                (commit commit)))
          (file-name (git-file-name name version))
          (sha256
-          (base32 "1hf5da1jmaa4y3pixw5j1l7985xizl9f747waiw0cmw6h4pgpcjp"))))
+          (base32 "0jpyg1bbpyrahwbgi6s79x3c75kjhpxp0a5006dxqcvzf1vh7rn1"))))
       (build-system guile-build-system)
       (arguments
        (list

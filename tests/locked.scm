@@ -14,7 +14,7 @@
              (ice-9 textual-ports)
              (landlock)
              (rnrs bytevectors)
-             ((seccomp) #:select (seccomp-supported?))
+             ((seccomp) #:select (seccomp-rule seccomp-supported?))
              (guix-cage build locked environment)
              (guix-cage build locked grants)
              ((gnu build linux-container)
@@ -822,7 +822,8 @@ LOCKED_TESTS_ALLOW_SKIP is set."
           (landlock-restrict!
            (landlock-rules (socket-grant (string-append directory "/granted")
                                           (const '())))
-           #:fs '(resolve-unix) #:net '() #:best-effort? #f)
+           #:fs '(resolve-unix) #:net '() #:flags '()
+           #:require 'fully-enforced)
           (map can-connect?
                (list (string-append directory "/granted")
                      (string-append directory "/other")))))))))
@@ -987,6 +988,13 @@ returns STATUS."
        (lambda ()
          (restrict! '() '())))))
  '(partially-enforced not-enforced))
+
+(test-locked-error "restrict! reports seccomp errors"
+  (call-with-replacement '(seccomp) 'seccomp-restrict!
+    (lambda _
+      (seccomp-rule 'getpid 'deny))
+    (lambda ()
+      (restrict! '() '()))))
 
 (test-equal "install-locked-package keeps the entry points of the commands"
   '(("bin" "foo")

@@ -35,7 +35,8 @@ even through symbolic links that appear meanwhile."
   (call-in-child
    (lambda ()
      (landlock-restrict! (list (landlock-path directory %removal))
-                         #:fs %removal #:net '() #:best-effort? #f)
+                         #:fs %removal #:net '() #:flags '()
+                         #:require 'fully-enforced)
      (with-error-to-port (%make-void-port "w")
        (lambda ()
          (for-each (lambda (file)

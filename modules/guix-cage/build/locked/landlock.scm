@@ -56,7 +56,8 @@
                  #:scope '(signal abstract-unix-socket)
                  #:flags (if (>= (landlock-abi-version) %log-abi)
                              '(log-new-exec-on)
-                             '()))))
+                             '())
+                 #:require 'not-enforced)))
     (unless (eq? status 'fully-enforced)
       (raise-locked-error "Landlock ABI ~a cannot enforce the whole sandbox \
 (~a)"

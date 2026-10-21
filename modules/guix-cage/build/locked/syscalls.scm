@@ -2,7 +2,11 @@
 ;;; Copyright © 2026 Florian Marrero Liestmann <f.m.liestmann@fx-ttr.de>
 
 (define-module (guix-cage build locked syscalls)
-  #:autoload (seccomp) (seccomp-argument seccomp-restrict! seccomp-rule)
+  #:autoload (seccomp) (seccomp-argument
+                        seccomp-error?
+                        seccomp-restrict!
+                        seccomp-rule)
+  #:use-module (ice-9 exceptions)
   #:use-module (ice-9 match)
   #:use-module (guix-cage build locked errors)
   #:use-module (srfi srfi-1)
@@ -159,7 +163,11 @@ two, other than VALUES."
               groups))
 
 (define (restrict! rules flags)
-  (let ((status (seccomp-restrict! rules #:flags flags)))
+  (let ((status (guard (e ((seccomp-error? e)
+                           (raise-locked-error "seccomp: ~a ~s"
+                                               (exception-message e)
+                                               (exception-irritants e))))
+                  (seccomp-restrict! rules #:flags flags))))
     (unless (eq? status 'fully-enforced)
       (raise-locked-error "seccomp cannot enforce the whole filter (~a)"
                           status))))
