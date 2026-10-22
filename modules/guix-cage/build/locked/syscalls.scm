@@ -167,7 +167,8 @@ two, other than VALUES."
                            (raise-locked-error "seccomp: ~a ~s"
                                                (exception-message e)
                                                (exception-irritants e))))
-                  (seccomp-restrict! rules #:flags flags))))
+                  (seccomp-restrict! rules #:flags flags
+                                     #:require 'fully-enforced))))
     (unless (eq? status 'fully-enforced)
       (raise-locked-error "seccomp cannot enforce the whole filter (~a)"
                           status))))
