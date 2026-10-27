@@ -207,7 +207,7 @@ or overlaps those of configurations, secrets or the system."
                             (cache-path "fontconfig")))))
 
 (define (%shm command-line)
-  (grant #:files (list (file-access "/dev/shm" '(read write)))))
+  (private-directory "/dev/shm"))
 
 (define (%dns command-line)
   "DNS queries can still carry data to anyone."

@@ -23,7 +23,7 @@
 ;; The container makes these itself, so grants only give rights on them
 (define %container-files
   '("/proc" "/dev/null" "/dev/zero" "/dev/full" "/dev/random" "/dev/urandom"
-    "/dev/tty" "/dev/pts" "/dev/shm"))
+    "/dev/tty" "/dev/pts"))
 
 (define %container-grant
   ;; /proc only has the processes of the sandbox.  Writing /proc/PID/mem

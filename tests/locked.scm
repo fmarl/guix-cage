@@ -969,6 +969,14 @@ returns STATUS."
                         (file-access "/dev/dri" '(list))
                         (file-access "/nonexistent" '(read))))))))))
 
+(test-equal "%shm grants a private /dev/shm"
+  '(("/dev/shm" "tmpfs" (no-suid no-dev)))
+  (map (lambda (file-system)
+         (list (file-system-mount-point file-system)
+               (file-system-type file-system)
+               (file-system-flags file-system)))
+       (file-systems (granted build:%shm))))
+
 (test-assert "store-links finds the links into the store"
   (call-with-temporary-directory
    (lambda (directory)
