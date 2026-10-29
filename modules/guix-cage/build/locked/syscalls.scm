@@ -9,6 +9,7 @@
   #:use-module (ice-9 exceptions)
   #:use-module (ice-9 match)
   #:use-module (guix-cage build locked errors)
+  #:use-module (guix-cage build locked known-syscalls)
   #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-26)
   #:export (%syscall-groups
@@ -141,6 +142,11 @@ two, other than VALUES."
                                                   personality))))
        (list %addr-no-randomize %mmap-page-zero %read-implies-exec)))
 
+(define (ipc-rules)
+  (map denied '(shmget shmat shmctl semget semop semtimedop semctl
+                msgget msgsnd msgrcv msgctl mq_open mq_unlink mq_timedsend
+                mq_timedreceive mq_notify mq_getsetattr)))
+
 (define %syscall-groups
   `((user-namespaces . ,user-namespaces-rules)
     (socket-families . ,socket-families-rules)
@@ -151,29 +157,42 @@ two, other than VALUES."
     (io-uring . ,io-uring-rules)
     (bpf . ,bpf-rules)
     (fanotify . ,fanotify-rules)
-    (personality . ,personality-rules)))
+    (personality . ,personality-rules)
+    (ipc . ,ipc-rules)))
 
 (define %quiet-syscall-groups
   `((user-namespaces . ,clone3-rules)))
 
-(define (group-rules groups allowances)
+(define (group-rules groups allowed)
   (append-map (match-lambda
                 ((name . rules)
-                 (if (memq name allowances) '() (rules))))
+                 (if (memq name allowed) '() (rules))))
               groups))
 
-(define (restrict! rules flags)
+(define %enforcement-levels
+  '(not-enforced partially-enforced fully-enforced))
+
+(define* (restrict! rules flags
+                    #:key (default 'allow) (require 'fully-enforced))
   (let ((status (guard (e ((seccomp-error? e)
                            (raise-locked-error "seccomp: ~a ~s"
                                                (exception-message e)
                                                (exception-irritants e))))
-                  (seccomp-restrict! rules #:flags flags
-                                     #:require 'fully-enforced))))
-    (unless (eq? status 'fully-enforced)
+                  (seccomp-restrict! rules
+                                     #:default default
+                                     #:flags flags
+                                     #:require require))))
+    (unless (memq status (member require %enforcement-levels))
       (raise-locked-error "seccomp cannot enforce the whole filter (~a)"
                           status))))
 
-(define (enforce-syscall-filter! allowances)
-  (restrict! (group-rules %syscall-groups allowances) '(log))
+(define (restrict-to-known! syscalls)
+  (restrict! (map (cut seccomp-rule <> 'allow) syscalls) '(log)
+             #:default `(errno ,ENOSYS)
+             #:require 'partially-enforced))
+
+(define (enforce-syscall-filter! allowed-groups)
+  (restrict! (group-rules %syscall-groups allowed-groups) '(log))
+  (restrict-to-known! %known-syscalls)
   ;; glibc tries clone3 for every thread, so its fallback stays unlogged
-  (restrict! (group-rules %quiet-syscall-groups allowances) '()))
+  (restrict! (group-rules %quiet-syscall-groups allowed-groups) '()))

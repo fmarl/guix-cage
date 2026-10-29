@@ -1,0 +1,62 @@
+;;; SPDX-License-Identifier: GPL-3.0-or-later
+;;; Copyright © 2026 Florian Marrero Liestmann <f.m.liestmann@fx-ttr.de>
+
+(define-module (guix-cage build locked known-syscalls)
+  #:export (%known-syscalls))
+
+(define %known-syscalls
+  '(accept accept4 access acct add_key adjtimex alarm arch_prctl bind bpf
+    brk cachestat capget capset chdir chmod chown chroot clock_adjtime
+    clock_getres clock_gettime clock_nanosleep clock_settime clone clone3
+    close close_range connect copy_file_range creat delete_module dup dup2
+    dup3 epoll_create epoll_create1 epoll_ctl epoll_ctl_old epoll_pwait
+    epoll_pwait2 epoll_wait epoll_wait_old eventfd eventfd2 execve execveat
+    exit exit_group faccessat faccessat2 fadvise64 fallocate fanotify_init
+    fanotify_mark fchdir fchmod fchmodat fchmodat2 fchown fchownat fcntl
+    fdatasync fgetxattr finit_module flistxattr flock fork fremovexattr
+    fsconfig fsetxattr fsmount fsopen fspick fstat fstatfs fsync ftruncate
+    futex futex_requeue futex_wait futex_waitv futex_wake futimesat
+    get_mempolicy get_robust_list get_thread_area getcpu getcwd getdents
+    getdents64 getegid geteuid getgid getgroups getitimer getpeername
+    getpgid getpgrp getpid getppid getpriority getrandom getresgid getresuid
+    getrlimit getrusage getsid getsockname getsockopt gettid gettimeofday
+    getuid getxattr getxattrat init_module inotify_add_watch inotify_init
+    inotify_init1 inotify_rm_watch io_cancel io_destroy io_getevents
+    io_pgetevents io_setup io_submit io_uring_enter io_uring_register
+    io_uring_setup ioctl ioperm iopl ioprio_get ioprio_set kcmp
+    kexec_file_load kexec_load keyctl kill landlock_add_rule
+    landlock_create_ruleset landlock_restrict_self lchown lgetxattr link
+    linkat listen listmount listxattr listxattrat llistxattr lookup_dcookie
+    lremovexattr lseek lsetxattr lsm_get_self_attr lsm_list_modules
+    lsm_set_self_attr lstat madvise map_shadow_stack mbind membarrier
+    memfd_create memfd_secret migrate_pages mincore mkdir mkdirat mknod
+    mknodat mlock mlock2 mlockall mmap modify_ldt mount mount_setattr
+    move_mount move_pages mprotect mq_getsetattr mq_notify mq_open
+    mq_timedreceive mq_timedsend mq_unlink mremap mseal msgctl msgget msgrcv
+    msgsnd msync munlock munlockall munmap name_to_handle_at nanosleep
+    newfstatat open open_by_handle_at open_tree openat openat2 pause
+    perf_event_open personality pidfd_getfd pidfd_open pidfd_send_signal
+    pipe pipe2 pivot_root pkey_alloc pkey_free pkey_mprotect poll ppoll
+    prctl pread64 preadv preadv2 prlimit64 process_madvise process_mrelease
+    process_vm_readv process_vm_writev pselect6 ptrace pwrite64 pwritev
+    pwritev2 quotactl quotactl_fd read readahead readlink readlinkat readv
+    reboot recvfrom recvmmsg recvmsg remap_file_pages removexattr
+    removexattrat rename renameat renameat2 request_key restart_syscall
+    rmdir rseq rt_sigaction rt_sigpending rt_sigprocmask rt_sigqueueinfo
+    rt_sigreturn rt_sigsuspend rt_sigtimedwait rt_tgsigqueueinfo
+    sched_get_priority_max sched_get_priority_min sched_getaffinity
+    sched_getattr sched_getparam sched_getscheduler sched_rr_get_interval
+    sched_setaffinity sched_setattr sched_setparam sched_setscheduler
+    sched_yield seccomp select semctl semget semop semtimedop sendfile
+    sendmmsg sendmsg sendto set_mempolicy set_mempolicy_home_node
+    set_robust_list set_thread_area set_tid_address setdomainname setfsgid
+    setfsuid setgid setgroups sethostname setitimer setns setpgid
+    setpriority setregid setresgid setresuid setreuid setrlimit setsid
+    setsockopt settimeofday setuid setxattr setxattrat shmat shmctl shmdt
+    shmget shutdown sigaltstack signalfd signalfd4 socket socketpair splice
+    stat statfs statmount statx swapoff swapon symlink symlinkat sync
+    sync_file_range syncfs sysfs sysinfo syslog tee tgkill time timer_create
+    timer_delete timer_getoverrun timer_gettime timer_settime timerfd_create
+    timerfd_gettime timerfd_settime times tkill truncate umask umount2 uname
+    unlink unlinkat unshare uretprobe userfaultfd ustat utime utimensat
+    utimes vfork vhangup vmsplice wait4 waitid write writev))

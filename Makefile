@@ -12,7 +12,7 @@ export GUILE_LOAD_PATH := $(CURDIR)/modules$(if $(GUILE_LOAD_PATH),:$(GUILE_LOAD
 repl = paths=$$($(GUIX) build -L $(CURDIR)/modules $(PACKAGES)) && \
 	$(GUIX) repl $$(printf -- '-L %s/share/guile/site/3.0 ' $$paths) -- $(1)
 
-.PHONY: check lint test warnings update
+.PHONY: check known-syscalls lint test warnings update
 
 check: warnings lint test
 
@@ -30,3 +30,9 @@ update:
 	guix time-machine -C channels.scm -- \
 	    describe -f channels > channels-lock.scm.new
 	mv channels-lock.scm.new channels-lock.scm
+
+known-syscalls:
+	libseccomp=$$($(GUIX) build libseccomp) && \
+	guile --no-auto-compile etc/known-syscalls.scm \
+	    $$libseccomp/lib/libseccomp.so \
+	    > modules/guix-cage/build/locked/known-syscalls.scm
