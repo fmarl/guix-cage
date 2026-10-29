@@ -2,4 +2,5 @@
  (list "make"
        "git"
        "guile"
-       "tini"))
+       "tini"
+       "xdg-dbus-proxy"))

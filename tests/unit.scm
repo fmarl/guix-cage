@@ -1,236 +1,9 @@
 ;;; SPDX-License-Identifier: GPL-3.0-or-later
 ;;; Copyright © 2026 Florian Marrero Liestmann <f.m.liestmann@fx-ttr.de>
 
-(use-modules (gnu packages video)
-             (guix build utils)
-             ((guix diagnostics) #:select (formatted-message?
-                                           formatted-message-string
-                                           formatted-message-arguments))
-             (guix gexp)
-             (guix packages)
-             (ice-9 ftw)
-             (ice-9 match)
-             (ice-9 string-fun)
-             (ice-9 textual-ports)
-             (landlock)
-             (rnrs bytevectors)
-             ((seccomp) #:select (seccomp-rule seccomp-supported?))
-             (guix-cage build locked environment)
-             (guix-cage build locked grants)
-             ((gnu build linux-container)
-              #:select (unprivileged-user-namespace-supported?))
-             ((gnu system file-systems) #:select (file-system-mount-point
-                                                  file-system-type
-                                                  file-system-flags))
-             ((guix-cage build locked gnupg) #:prefix build:)
-             ((guix-cage build locked rules) #:prefix build:)
-             (guix-cage locked)
-             (srfi srfi-1)
-             (srfi srfi-26)
-             (srfi srfi-34)
-             (srfi srfi-64)
-             (system foreign)
-             (system foreign-library))
+(include "common.scm")
 
-(define mpv-locked
-  (make-locked-package
-   mpv
-   (list (locked-command
-           (name "mpv")
-           (program (file-append mpv "/bin/mpv"))))))
-
-(define-syntax-rule (define-internal module name ...)
-  (begin (define name (@@ module name)) ...))
-
-(define (access->list access)
-  (if (file-access? access)
-      (list (file-access-file access) (file-access-permissions access))
-      (list (port-access-port access) (port-access-protocol access))))
-
-(define (call-with-environment-variables variables thunk)
-  "Call THUNK with VARIABLES, an alist where #f unsets a variable."
-  (let ((saved (map (match-lambda
-                      ((name . _) (cons name (getenv name))))
-                    variables)))
-    (dynamic-wind
-      (lambda ()
-        (for-each (match-lambda
-                    ((name . value) (setenv name value)))
-                  variables))
-      thunk
-      (lambda ()
-        (for-each (match-lambda
-                    ((name . value) (setenv name value)))
-                  saved)))))
-
-(define (call-with-replacement module name replacement thunk)
-  "Call THUNK while NAME in MODULE is REPLACEMENT."
-  (let* ((module (resolve-module module))
-         (original (module-ref module name)))
-    (dynamic-wind
-      (lambda () (module-set! module name replacement))
-      thunk
-      (lambda () (module-set! module name original)))))
-
-(define (call-with-temporary-directory proc)
-  (let ((directory (mkdtemp (string-append (or (getenv "TMPDIR") "/tmp")
-                                           "/locked-test-XXXXXX"))))
-    (dynamic-wind
-      (const #t)
-      (lambda () (proc directory))
-      (lambda () (delete-file-recursively directory)))))
-
-(define (call-with-runtime-directory proc)
-  (call-with-temporary-directory
-   (lambda (directory)
-     (call-with-environment-variables `(("XDG_RUNTIME_DIR" . ,directory))
-       (lambda ()
-         (proc directory))))))
-
-(define (call-with-sandbox-home proc)
-  "Call PROC with a temporary home and runtime directory."
-  (call-with-temporary-directory
-   (lambda (directory)
-     (let ((home (string-append directory "/home"))
-           (runtime (string-append directory "/run")))
-       (mkdir-p home)
-       (mkdir-p runtime)
-       (call-with-environment-variables
-        `(("HOME" . ,home)
-          ("XDG_RUNTIME_DIR" . ,runtime)
-          ("XDG_CONFIG_HOME" . ,(string-append home "/.config")))
-        (lambda ()
-          (proc home runtime)))))))
-
-(define (dead-pid)
-  (match (primitive-fork)
-    (0 (primitive-_exit 0))
-    (pid (waitpid pid) pid)))
-
-(define (in-child thunk)
-  (flush-all-ports)
-  (match (pipe)
-    ((in . out)
-     (match (primitive-fork)
-       (0
-        (close-port in)
-        (write (false-if-exception (thunk)) out)
-        (close-port out)
-        (primitive-_exit 0))
-       (pid
-        (close-port out)
-        (let ((result (read in)))
-          (close-port in)
-          (waitpid pid)
-          (and (not (eof-object? result)) result)))))))
-
-(define (unix-socket file)
-  (bind (socket PF_UNIX SOCK_STREAM 0) AF_UNIX file)
-  file)
-
-(define (listening-socket file)
-  (let ((listener (socket PF_UNIX SOCK_STREAM 0)))
-    (bind listener AF_UNIX file)
-    (listen listener 1)
-    listener))
-
-(define (can-connect? file)
-  (false-if-exception
-   (let ((connection (socket PF_UNIX SOCK_STREAM 0)))
-     (connect connection AF_UNIX file)
-     (close-port connection)
-     #t)))
-
-(define (readable? file)
-  (and (false-if-exception (call-with-input-file file get-string-all)) #t))
-
-(define (write-file file content)
-  (mkdir-p (dirname file))
-  (call-with-output-file file (cut display content <>)))
-
-(define (store-program name)
-  (canonicalize-path (search-path (parse-path (getenv "PATH")) name)))
-
-(define guile (store-program "guile"))
-(define tini (store-program "tini"))
-
-(define (feature-available? available? feature)
-  "Return AVAILABLE?.  Report FEATURE if it is missing, and fail unless
-LOCKED_TESTS_ALLOW_SKIP is set."
-  (unless available?
-    (format (current-error-port) "missing kernel feature: ~a~%" feature)
-    (unless (getenv "LOCKED_TESTS_ALLOW_SKIP")
-      (exit 1)))
-  available?)
-
-(define-syntax-rule (test-rejects name message expression)
-  (test-assert name
-    (guard (exception ((formatted-message? exception)
-                       (string-contains
-                        (apply format #f
-                               (formatted-message-string exception)
-                               (formatted-message-arguments exception))
-                        message)))
-      expression
-      #f)))
-
-(define-syntax-rule (test-locked-error name expression)
-  (test-assert name
-    (guard (exception ((locked-error? exception) #t))
-      expression
-      #f)))
-
-(define-internal (guix-cage build locked)
-  run-locked)
-(define-internal (guix-cage build locked errors)
-  locked-error?)
-(define-internal (guix-cage build locked file-names)
-  directory-contains?)
-(define-internal (guix-cage build locked instances)
-  make-instance-directory delete-beneath)
-(define-internal (guix-cage build locked landlock)
-  landlock-rules enforce-landlock!)
-(define-internal (guix-cage build locked namespaces)
-  %container-grant file-systems store-links)
-(define-internal (guix-cage build locked sandbox)
-  sandbox sandbox-namespaces sandbox-links sandbox-signals sandbox-fds)
-(define-internal (guix-cage build locked process)
-  close-on-exec-except deny-write-execute! apply-resource-limits!)
-(define-internal (guix-cage build locked syscalls)
-  enforce-syscall-filter! restrict!)
-(define-internal (guix-cage build locked rules)
-  base-grant elf-interpreters user-directory argument-file arguments-match?)
-(define-internal (guix-cage build locked wayland)
-  wayland-string wayland-string-ref wayland-message)
-(define-internal (guix-cage build locked-package)
-  install-locked-package)
-
-(define (granted rule . arguments)
-  "Return what RULE grants for ARGUMENTS."
-  (rule (cons "test" arguments)))
-
-(define (accesses grant)
-  (map access->list (append (grant-files grant) (grant-ports grant))))
-
-(define (restrict-to! grant)
-  (landlock-restrict! (landlock-rules grant)))
-
-(define (user-directory-with line)
-  (call-with-temporary-directory
-   (lambda (home)
-     (write-file (string-append home "/.config/user-dirs.dirs") line)
-     (call-with-environment-variables
-      `(("HOME" . ,home)
-        ("XDG_CONFIG_HOME" . ,(string-append home "/.config")))
-      (lambda ()
-        (and=> (user-directory "DOWNLOAD" "Downloads")
-               (lambda (directory)
-                 (if (string-prefix? home directory)
-                     (string-append "~" (string-drop directory
-                                                     (string-length home)))
-                     directory))))))))
-
-(test-begin "locked")
+(test-begin "unit")
 
 (define (rule-sexp rule)
   "Return the code of RULE, with that of the G-expressions in it."
@@ -280,11 +53,12 @@ LOCKED_TESTS_ALLOW_SKIP is set."
    "GPG_AGENT_INFO" "GITHUB_TOKEN"))
 
 (test-equal "locked-command defaults are closed"
-  '(() #f ())
+  '(() #t #f ())
   (let ((command (locked-command (name "true") (program "/bin/true"))))
     (list (locked-command-rules command)
+          (locked-command-own-namespaces? command)
           (locked-command-deny-write-execute? command)
-          (locked-command-syscall-allowances command))))
+          (locked-command-allowed-syscall-groups command))))
 
 (define (command-with-limits limits)
   (locked-command
@@ -308,18 +82,18 @@ LOCKED_TESTS_ALLOW_SKIP is set."
 
 (test-equal "locked-command takes system call groups"
   '(user-namespaces keyring)
-  (locked-command-syscall-allowances
+  (locked-command-allowed-syscall-groups
    (locked-command
      (name "true")
      (program "/bin/true")
-     (syscall-allowances '(user-namespaces keyring)))))
+     (allowed-syscall-groups '(user-namespaces keyring)))))
 
 (test-rejects "locked-command rejects unknown system call groups"
   "unknown system call groups"
   (locked-command
     (name "true")
     (program "/bin/true")
-    (syscall-allowances '(typo))))
+    (allowed-syscall-groups '(typo))))
 
 (test-rejects "locked-command rejects rules that aren't G-expressions"
   "rule is not a G-expression"
@@ -378,7 +152,15 @@ LOCKED_TESTS_ALLOW_SKIP is set."
           '("--talk=org.freedesktop.secrets" "--talk=org.freedesktop.*"
             "--own=*" "--call=ca.desrt.dconf=*"
             "--see=org.freedesktop.systemd1.Manager"
-            "--talk=org.freedesktop.Flatpak.*"))))
+            "--talk=org.freedesktop.Flatpak.*"
+            "--talk=org.freedesktop.impl.portal.desktop.wlr"
+            "--talk=org.freedesktop.portal.Desktop"
+            "--talk=org.freedesktop.portal.*"
+            "--own=org.freedesktop.portal.Desktop"
+            "--call=org.freedesktop.portal.Desktop=*"
+            "--call=org.freedesktop.portal.Desktop"
+            "--talk=org.mpris.*"
+            "--call=org.mpris.*=org.mpris.MediaPlayer2.*"))))
 
 (test-assert "rules take valid parameters"
   (every gexp?
@@ -392,16 +174,57 @@ LOCKED_TESTS_ALLOW_SKIP is set."
                (when-arguments '(urls (extensions ".m3u")) %dns)
                (dbus "--talk=org.freedesktop.Notifications"
                      "--own=org.mpris.MediaPlayer2.mpv.*"
-                     "--call=org.freedesktop.portal.Desktop=org.freedesktop.portal.OpenURI.*"))))
+                     "--call=org.freedesktop.portal.Desktop=org.freedesktop.portal.OpenURI.*"
+                     "--see=org.freedesktop.portal.Desktop"))))
 
-(test-assert "make-locked-package only supports Linux"
+(test-assert "make-locked-package only supports the supported systems"
   (let ((systems (package-supported-systems mpv-locked)))
     (and (pair? systems)
-         (every (cut string-suffix? "-linux" <>) systems))))
+         (every (cut member <> %supported-systems) systems))))
+
+(test-assert "check-platform! takes the supported systems"
+  (begin
+    (check-platform! "x86_64")
+    (check-platform! "aarch64")
+    #t))
+
+(test-locked-error "check-platform! refuses 32-bit systems"
+  (check-platform! "i686"))
+
+(test-assert "the known system calls are sorted and unique"
+  (let ((names (map symbol->string %known-syscalls)))
+    (equal? names (sort (delete-duplicates names) string<?))))
+
+(test-assert "libseccomp knows the known system calls"
+  (let ((resolve (foreign-library-function
+                  (force (@@ (seccomp) libseccomp))
+                  "seccomp_syscall_resolve_name_arch"
+                  #:return-type int
+                  #:arg-types (list uint32 '*))))
+    (every (lambda (name)
+             (any (lambda (architecture)
+                    (>= (resolve architecture
+                                 (string->pointer (symbol->string name)))
+                        0))
+                  '(#xc000003e #xc00000b7)))
+           %known-syscalls)))
 
 (test-equal "make-locked-package keeps the version"
   (package-version mpv)
   (package-version mpv-locked))
+
+(test-equal "make-locked-package names the layers of the sandbox"
+  '(#t #f)
+  (map (lambda (own-namespaces?)
+         (let ((package (make-locked-package
+                         mpv
+                         (list (locked-command
+                                 (name "mpv")
+                                 (program (file-append mpv "/bin/mpv"))
+                                 (own-namespaces? own-namespaces?))))))
+           (and (string-contains (package-description package) "namespaces")
+                #t)))
+       '(#t #f)))
 
 (test-equal "user-directory, below the home directory"
   "~/Downloads"
@@ -700,99 +523,6 @@ LOCKED_TESTS_ALLOW_SKIP is set."
                                      ("LC_OTHER" . "granted"))))
             string<?))))
 
-(define %prot-read 1)
-(define %prot-write 2)
-(define %prot-exec 4)
-(define %map-private 2)
-(define %map-anonymous #x20)
-
-(define mmap
-  (foreign-library-function #f "mmap" #:return-type '*
-                            #:arg-types (list '* size_t int int int long)))
-
-(define mprotect
-  (foreign-library-function #f "mprotect" #:return-type int
-                            #:arg-types (list '* size_t int)
-                            #:return-errno? #t))
-
-(define (make-written-executable)
-  (let ((page (mmap %null-pointer 4096 (logior %prot-read %prot-write)
-                    (logior %map-private %map-anonymous) -1 0)))
-    (call-with-values
-        (lambda ()
-          (mprotect page 4096 (logior %prot-read %prot-exec)))
-      (lambda (result errno)
-        (if (< result 0) errno 0)))))
-
-(test-equal "deny-write-execute! keeps written memory from being executed"
-  (list 0 EACCES)
-  (map (lambda (deny?)
-         (in-child
-          (lambda ()
-            (when deny?
-              (deny-write-execute!))
-            (make-written-executable))))
-       '(#f #t)))
-
-(test-equal "close-on-exec-except"
-  '(#t #f)
-  (in-child
-   (lambda ()
-     (let ((closed (port->fdes (open-input-file "/dev/null")))
-           (kept (port->fdes (open-input-file "/dev/null"))))
-       (fcntl kept F_SETFD 0)
-       (close-on-exec-except (list 0 1 2 kept))
-       (map (lambda (fd)
-              (= FD_CLOEXEC (logand FD_CLOEXEC (fcntl fd F_GETFD))))
-            (list closed kept))))))
-
-(test-equal "apply-resource-limits!"
-  '((0 0) (0 0))
-  (in-child
-   (lambda ()
-     (apply-resource-limits! %default-resource-limits)
-     (map (lambda (resource)
-            (call-with-values (lambda () (getrlimit resource)) list))
-          '(core rtprio)))))
-
-(test-assert "make-instance-directory removes those of exited processes"
-  (call-with-runtime-directory
-   (lambda (directory)
-     (let ((stale (format #f "~a/locked/tmp/~a" directory (dead-pid)))
-           (alive (format #f "~a/locked/tmp/~a" directory (getppid))))
-       (mkdir-p stale)
-       (mkdir-p alive)
-       (and (equal? (make-instance-directory "tmp")
-                    (format #f "~a/locked/tmp/~a" directory (getpid)))
-            (not (file-exists? stale))
-            (file-exists? alive))))))
-
-(test-assert "make-instance-directory doesn't follow symbolic links"
-  (call-with-runtime-directory
-   (lambda (runtime)
-     (call-with-temporary-directory
-      (lambda (outside)
-        (let ((stale (format #f "~a/locked/tmp/~a" runtime (dead-pid)))
-              (kept (string-append outside "/kept/file")))
-          (write-file kept "")
-          (mkdir-p (string-append stale "/sub"))
-          (symlink (dirname kept) (string-append stale "/sub/link"))
-          (symlink outside (string-append stale "/link"))
-          (make-instance-directory "tmp")
-          (and (not (file-exists? stale))
-               (file-exists? kept))))))))
-
-(test-equal "delete-beneath only deletes beneath the directory"
-  '(#f #t)
-  (call-with-temporary-directory
-   (lambda (directory)
-     (let ((inside (string-append directory "/inside/file"))
-           (outside (string-append directory "/outside/file")))
-       (write-file inside "")
-       (write-file outside "")
-       (delete-beneath (dirname inside) (list inside outside))
-       (map file-exists? (list inside outside))))))
-
 (test-assert "socket-grant"
   (call-with-temporary-directory
    (lambda (directory)
@@ -807,47 +537,34 @@ LOCKED_TESTS_ALLOW_SKIP is set."
                      (grant-variables missing))
                `(((,socket (connect))) (("SOCKET" . ,socket)) () ()))))))
 
-(unless (feature-available? (>= (landlock-abi-version) 9)
-                            "Landlock ABI 9, for Unix sockets")
-  (test-skip "socket-grant only grants the socket"))
+(define (error-report thunk)
+  (match (pipe)
+    ((in . out)
+     (flush-all-ports)
+     (match (primitive-fork)
+       (0
+        (close-port in)
+        (dup2 (port->fdes out) 2)
+        (exit-with (lambda () (exit (call-with-error-reporting thunk)))))
+       (pid
+        (close-port out)
+        (let ((report (get-string-all in)))
+          (close-port in)
+          (list (status:exit-val (cdr (waitpid pid))) report)))))))
 
-(test-equal "socket-grant only grants the socket"
-  '(#t #f)
-  (call-with-temporary-directory
-   (lambda (directory)
-     (let ((granted (listening-socket (string-append directory "/granted")))
-           (other (listening-socket (string-append directory "/other"))))
-       (in-child
-        (lambda ()
-          (landlock-restrict!
-           (landlock-rules (socket-grant (string-append directory "/granted")
-                                          (const '())))
-           #:fs '(resolve-unix) #:net '() #:flags '()
-           #:require 'fully-enforced)
-          (map can-connect?
-               (list (string-append directory "/granted")
-                     (string-append directory "/other")))))))))
+(test-assert "call-with-error-reporting reports unexpected errors"
+  (match (error-report (lambda () (car (string->number "x"))))
+    ((1 report)
+     (string-prefix? "locked: car: Wrong type argument" report))
+    (_ #f)))
 
-(define (exit-with thunk)
-  "Call THUNK in this child process, and exit as it asks, or with 127 if it
-fails."
-  (catch #t
-    thunk
-    (match-lambda*
-      (('quit (? integer? status)) (primitive-_exit status))
-      (_ (primitive-_exit 127)))))
+(test-equal "call-with-error-reporting returns the value of the thunk"
+  '(42 "")
+  (error-report (const 42)))
 
-(define (exit-status-of thunk)
-  "Return the exit status of a child process that calls THUNK."
-  (flush-all-ports)
-  (match (primitive-fork)
-    (0 (exit-with thunk))
-    (pid (status:exit-val (cdr (waitpid pid))))))
-
-(define (exit-status-under rules command)
-  (exit-status-of (lambda ()
-                    (landlock-restrict! rules)
-                    (apply execl (car command) command))))
+(test-equal "run-locked needs an init program in namespaces of its own"
+  1
+  (run-locked guile '()))
 
 (test-assert "elf-interpreters finds the dynamic loader"
   (match (elf-interpreters (store-program "true"))
@@ -866,27 +583,16 @@ fails."
     ("/etc" (read)))
   (accesses (base-grant (list (store-program "true")) #t)))
 
-(test-equal "the container grants /proc, /dev/null and /dev/urandom"
-  '(("/proc" (read))
-    ("/dev/null" (read write))
-    ("/dev/urandom" (read)))
+(test-equal "the container grants reading /proc"
+  '(("/proc" (read)))
   (accesses %container-grant))
 
-(test-equal "base-grant without executes? only grants executing the programs"
+(test-equal "base-grant without executes-others? only lets the programs run"
   (let ((true (store-program "true")))
     `(("/gnu/store" (read load))
       (,true (read execute))
       ,@(map (cut list <> '(read execute)) (elf-interpreters true))))
   (take (accesses (base-grant (list (store-program "true")) #f)) 3))
-
-(test-equal "without executes?, the program only runs itself"
-  '(0 126)
-  (let ((sh (store-program "sh"))
-        (true (store-program "true")))
-    (map (lambda (executes?)
-           (exit-status-under (landlock-rules (base-grant (list sh) executes?))
-                              (list sh "-c" (string-append true "; exit $?"))))
-         '(#t #f))))
 
 (define (landlock-options-under status)
   "Return the options that enforce-landlock! gives landlock-restrict!, which
@@ -897,7 +603,7 @@ returns STATUS."
         (set! options rest)
         status)
       (lambda ()
-        (enforce-landlock! '())))
+        (enforce-landlock! '() 6)))
     options))
 
 (for-each
@@ -910,24 +616,71 @@ returns STATUS."
   '(signal abstract-unix-socket)
   (cadr (memq #:scope (landlock-options-under 'fully-enforced))))
 
-(test-equal "sandbox only shares the network of the host for ports"
+(test-locked-error "enforce-landlock! refuses kernels below the ABI it needs"
+  (call-with-replacement '(landlock) 'landlock-abi-version (const 9)
+    (lambda ()
+      (enforce-landlock! '() 10))))
+
+(test-equal "container-sandbox shares the network of the host for ports"
   '((user mnt pid ipc uts cgroup net) (user mnt pid ipc uts cgroup))
   (map (lambda (grant)
-         (sandbox-namespaces (sandbox grant '("/bin/true"))))
+         (sandbox-namespaces (container-sandbox grant '("/bin/true"))))
        (list %no-grant (grant #:ports (list (port-access 443 'tcp))))))
 
-(test-equal "sandbox passes on the signals of the terminal if detached"
+(test-equal "host-sandbox mounts and links nothing"
+  '(() () ())
+  (call-with-temporary-directory
+   (lambda (directory)
+     (let ((link (string-append directory "/profile")))
+       (symlink (dirname (dirname guile)) link)
+       (let ((sandbox (host-sandbox
+                       (grant #:files (list (read-access directory)))
+                       '("/bin/true")
+                       #:environment
+                       (list (string-append "PATH=" link "/bin")))))
+         (list (sandbox-namespaces sandbox)
+               (sandbox-file-systems sandbox)
+               (sandbox-links sandbox)))))))
+
+(test-assert "sandboxes refuse unknown options"
+  (every (lambda (make)
+           (catch 'keyword-argument-error
+             (lambda () (make %no-grant '("/bin/true") #:new-sesion? #t) #f)
+             (const #t)))
+         (list container-sandbox host-sandbox)))
+
+(test-locked-error "host-sandbox refuses private files"
+  (host-sandbox (grant #:files (list (file-access "/dev/shm" '(read write)
+                                                  #:private? #t)))
+                '("/bin/true")))
+
+(test-equal "sandboxes need Landlock ABI 10 on the network of the host"
+  '(6 10 10)
+  (map sandbox-landlock-abi
+       (list (container-sandbox %no-grant '("/bin/true"))
+             (container-sandbox (grant #:ports (list (port-access 443 'tcp)))
+                                '("/bin/true"))
+             (host-sandbox %no-grant '("/bin/true")))))
+
+(test-equal "sandboxes only allow IPC in an IPC namespace of their own"
+  '(#t #f)
+  (map (lambda (sandbox)
+         (and (memq 'ipc (sandbox-allowed-syscall-groups sandbox)) #t))
+       (list (container-sandbox %no-grant '("/bin/true"))
+             (host-sandbox %no-grant '("/bin/true")))))
+
+(test-equal "sandboxes pass on the signals of the terminal in a new session"
   (list (list SIGTERM) (list SIGINT SIGQUIT SIGTERM SIGHUP))
-  (map (lambda (detached?)
-         (sandbox-signals (sandbox %no-grant '("/bin/true")
-                                   #:detached? detached?)))
+  (map (lambda (new-session?)
+         (sandbox-signals (container-sandbox %no-grant '("/bin/true")
+                                             #:new-session? new-session?)))
        '(#f #t)))
 
-(test-equal "sandbox keeps the standard descriptors and those of the grant"
+(test-equal "sandboxes keep the standard descriptors and those of the grant"
   '(0 1 2 7)
-  (sandbox-fds (sandbox (grant #:fds '(7)) '("/bin/true"))))
+  (sandbox-fds (container-sandbox (grant #:fds '(7)) '("/bin/true"))))
 
-(test-assert "sandbox adds the links into the store"
+(test-assert "container-sandbox adds the links into the store"
   (call-with-temporary-directory
    (lambda (directory)
      (let ((link (string-append directory "/profile")))
@@ -935,10 +688,10 @@ returns STATUS."
        (equal? `(("/run/locked/true" . "/bin/true")
                  (,link . ,(dirname (dirname guile))))
                (sandbox-links
-                (sandbox %no-grant '("/bin/true")
-                         #:environment
-                         (list (string-append "PATH=" link "/bin"))
-                         #:links '(("/run/locked/true" . "/bin/true")))))))))
+                (container-sandbox
+                 %no-grant '("/bin/true")
+                 #:environment (list (string-append "PATH=" link "/bin"))
+                 #:links '(("/run/locked/true" . "/bin/true")))))))))
 
 (test-assert "file-systems show the granted files"
   (call-with-temporary-directory
@@ -1073,262 +826,6 @@ returns STATUS."
                   (stat:type (lstat (string-append output (share "doc")))))
              (file-exists? (string-append output (share "foo/other"))))))))
 
-(define syscall
-  (let ((proc (foreign-library-function #f "syscall"
-                                        #:return-type long
-                                        #:arg-types (list long long long
-                                                          long long)
-                                        #:return-errno? #t)))
-    (lambda (name . args)
-      "Return the errno of system call NAME with ARGS, or 0.  Strings are
-passed as pointers to their C strings."
-      (let ((pointers (map (lambda (arg)
-                             (if (string? arg) (string->pointer arg) arg))
-                           args)))
-        (call-with-values
-            (lambda ()
-              (apply proc ((@@ (seccomp) syscall-number) name)
-                     (append (map (lambda (arg)
-                                    (if (pointer? arg)
-                                        (pointer-address arg)
-                                        arg))
-                                  pointers)
-                             (make-list (- 4 (length args)) 0))))
-          (lambda (result errno)
-            ;; Keep the strings from the garbage collector until here
-            (set! %syscall-arguments pointers)
-            (if (< result 0) errno 0)))))))
-
-(define %syscall-arguments '())
-
-(define %clone-newuser #x10000000)
-(define %af-netlink 16)
-(define %af-packet 17)
-(define %at-fdcwd -100)
-(define %netlink-kobject-uevent 15)
-(define %ipproto-icmp 1)
-(define %ipproto-icmpv6 58)
-(define %ipproto-sctp 132)
-(define %ipproto-mptcp 262)
-(define %uffd-user-mode-only 1)
-(define %keyctl-get-keyring-id 0)
-(define %key-spec-session-keyring -3)
-(define %fan-report-fid #x200)
-(define %addr-no-randomize #x0040000)
-(define %personality-query #xffffffff)
-
-(define %socket-pair (make-bytevector 8))
-
-;; System calls with the errnos that the filter answers them with.  File
-;; names are null pointers, which the kernel answers with EFAULT.
-(define %denied-calls
-  `(((unshare ,%clone-newuser) ,EPERM)
-    ((clone3 0 0) ,ENOSYS)
-    ((socket ,%af-packet ,SOCK_RAW 0) ,EAFNOSUPPORT)
-    ((socket ,(logior (ash 1 32) %af-packet) ,SOCK_RAW 0) ,EAFNOSUPPORT)
-    ((socket ,%af-netlink ,SOCK_RAW ,%netlink-kobject-uevent) ,EAFNOSUPPORT)
-    ((socketpair ,AF_INET ,SOCK_STREAM 0 0) ,EAFNOSUPPORT)
-    ((socket ,AF_INET ,SOCK_DGRAM ,%ipproto-icmp) ,EPROTONOSUPPORT)
-    ((socket ,AF_INET6 ,(logior SOCK_DGRAM SOCK_CLOEXEC) ,%ipproto-icmpv6)
-     ,EPROTONOSUPPORT)
-    ((socket ,AF_INET ,SOCK_STREAM ,%ipproto-mptcp) ,EPROTONOSUPPORT)
-    ((socket ,AF_INET ,SOCK_STREAM ,%ipproto-sctp) ,EPROTONOSUPPORT)
-    ((socket ,AF_INET ,SOCK_RAW ,%ipproto-icmp) ,EPROTONOSUPPORT)
-    ((keyctl ,%keyctl-get-keyring-id ,%key-spec-session-keyring) ,EPERM)
-    ((userfaultfd ,%uffd-user-mode-only) ,EPERM)
-    ((perf_event_open 0 0 -1 -1) ,EPERM)
-    ((io_uring_setup 0 0) ,ENOSYS)
-    ((bpf 0 0 1) ,EPERM)
-    ((fanotify_init ,%fan-report-fid 0) ,EPERM)
-    ((personality ,%addr-no-randomize) ,EPERM)))
-
-;; System calls that the filter leaves to the kernel
-(define %allowed-calls
-  `((unshare 0)
-    (socket ,AF_UNIX ,SOCK_STREAM 0)
-    (socketpair ,AF_UNIX ,SOCK_STREAM 0
-                ,(pointer-address (bytevector->pointer %socket-pair)))
-    (socket ,AF_INET ,SOCK_STREAM 0)
-    (socket ,AF_INET ,SOCK_STREAM ,IPPROTO_TCP)
-    (socket ,AF_INET6 ,(logior SOCK_STREAM SOCK_NONBLOCK SOCK_CLOEXEC)
-            ,IPPROTO_TCP)
-    (socket ,AF_INET ,SOCK_DGRAM 0)
-    (socket ,AF_INET6 ,SOCK_DGRAM ,IPPROTO_UDP)
-    (socket ,%af-netlink ,SOCK_RAW 0)
-    (personality ,%personality-query)))
-
-(define (errno-in-new-child call)
-  "Return the errno of CALL in a new child process, which is single-threaded
-until then, as unshare needs."
-  (match (primitive-fork)
-    (0 (primitive-_exit (apply syscall call)))
-    (pid (status:exit-val (cdr (waitpid pid))))))
-
-(define (errnos-under-filter allowances calls)
-  (in-child
-   (lambda ()
-     (when allowances
-       (enforce-syscall-filter! allowances))
-     (map errno-in-new-child calls))))
-
-(unless (feature-available? (seccomp-supported?) "seccomp")
-  (test-skip "seccomp"))
-
-(test-group "seccomp"
-  (for-each
-   (match-lambda*
-     (((call errno) unfiltered filtered)
-      ;; The kernel lacks the call or protocol, so the filter changes nothing
-      (when (and (= errno unfiltered)
-                 (memv errno (list ENOSYS EPROTONOSUPPORT)))
-        (test-skip 1))
-      (test-equal (format #f "enforce-syscall-filter! denies ~s" call)
-        (list #t errno)
-        (list (not (= unfiltered errno)) filtered))))
-   %denied-calls
-   (errnos-under-filter #f (map first %denied-calls))
-   (errnos-under-filter '() (map first %denied-calls)))
-
-  (test-equal "enforce-syscall-filter! keeps the other system calls"
-    (errnos-under-filter #f %allowed-calls)
-    (errnos-under-filter '() %allowed-calls))
-
-  (test-equal "enforce-syscall-filter! leaves out the allowances"
-    (list 0 EPERM 0)
-    (errnos-under-filter '(user-namespaces socket-protocols)
-                         `((unshare ,%clone-newuser)
-                           (keyctl ,%keyctl-get-keyring-id
-                                   ,%key-spec-session-keyring)
-                           (socket ,AF_INET ,SOCK_DGRAM ,%ipproto-icmp)))))
-(define (guile-script expression)
-  (object->string `(exit (if ,expression 42 43))))
-
-(define (guile-status expression)
-  "Return 42 if Guile finds EXPRESSION true, and 43 otherwise."
-  (exit-status-of (lambda ()
-                    (execl guile "guile" "-c" (guile-script expression)))))
-
-(define* (locked-guile-status expression #:optional (rules '())
-                              #:key (executes? #t))
-  "Return 42 if Guile finds EXPRESSION true under run-locked with RULES, and
-43 otherwise."
-  (exit-status-of (lambda ()
-                    (set-program-arguments
-                     (list "guile" "-c" (guile-script expression)))
-                    (run-locked guile rules #:init tini
-                                #:executes? executes?))))
-
-(define* (test-locked name expression #:optional (rules '()))
-  "Test that EXPRESSION is only true outside of run-locked with RULES."
-  (test-equal name
-    '(42 43)
-    (list (guile-status expression)
-          (locked-guile-status expression rules))))
-
-(unless (and (feature-available? (seccomp-supported?) "seccomp")
-             (feature-available? (>= (landlock-abi-version) 6)
-                                 "Landlock ABI 6, for scopes")
-             (feature-available? (unprivileged-user-namespace-supported?)
-                                 "user namespaces"))
-  (test-skip "run-locked"))
-
-(test-group "run-locked"
-  (call-with-sandbox-home
-   (lambda (home runtime)
-     (let ((secret (string-append home "/secret")))
-       (write-file secret "secret")
-       (test-locked "run-locked keeps the home directory from being read"
-         `(false-if-exception (call-with-input-file ,secret read-char)))
-       (test-locked "run-locked hides the files it doesn't grant"
-         `(file-exists? ,secret)))
-
-     (let* ((bus (string-append runtime "/bus"))
-            (listener (listening-socket bus)))
-       (test-locked "run-locked hides the sockets of the runtime directory"
-         `(false-if-exception
-           (connect (socket PF_UNIX SOCK_STREAM 0) AF_UNIX ,bus)))
-       (close-port listener))))
-
-  (let* ((name (string-append (string #\nul) "locked-test-"
-                              (number->string (getpid))))
-         (listener (socket PF_UNIX SOCK_STREAM 0)))
-    (bind listener AF_UNIX name)
-    ;; Connections are never accepted
-    (listen listener 16)
-    (for-each (lambda (network rules)
-                (test-locked (string-append "run-locked hides abstract sockets, "
-                                            network)
-                  `(false-if-exception
-                    (connect (socket PF_UNIX SOCK_STREAM 0) AF_UNIX
-                             (string-append (string #\nul)
-                                            ,(string-drop name 1))))
-                  rules))
-              '("in its network namespace" "on the host network")
-              (list '() (list (build:tcp-ports 443))))
-    (close-port listener))
-
-  (call-with-environment-variables '(("SSH_AUTH_SOCK" . "/agent")
-                                     ("DISPLAY" . ":0")
-                                     ("LD_PRELOAD" . ""))
-    (lambda ()
-      (test-locked "run-locked drops variables"
-        '(or (getenv "SSH_AUTH_SOCK") (getenv "DISPLAY")
-             (getenv "LD_PRELOAD")))))
-
-  (let ((fd (dup->fdes (open-input-file "/dev/null") 100)))
-    (test-locked "run-locked closes inherited descriptors"
-      `(false-if-exception (stat ,fd)))
-    (close-fdes fd))
-
-  (test-locked "run-locked filters system calls"
-    `(let ((personality ((@ (system foreign-library) foreign-library-function)
-                         #f "personality"
-                         #:return-type (@ (system foreign) int)
-                         #:arg-types (list (@ (system foreign) unsigned-long)))))
-       (>= (personality ,%addr-no-randomize) 0)))
-
-  (test-equal "run-locked only shows /bin/sh with %shell"
-    '(43 42)
-    (map (lambda (rules)
-           (locked-guile-status
-            '(false-if-exception (zero? (system* "/bin/sh" "-c" "exit 0")))
-            rules))
-         (list '() (list build:%shell))))
-
-  (test-equal "run-locked without executes? runs the program, but no others"
-    '(42 43)
-    (map (lambda (expression)
-           (locked-guile-status expression '() #:executes? #f))
-         (list #t `(false-if-exception (zero? (system* ,(store-program "true")))))))
-
-  (test-locked "run-locked keeps the program from signalling others"
-    `(false-if-exception (begin (kill ,(getpid) 0) #t)))
-
-  (test-locked "run-locked only shows the processes of the sandbox"
-    `(file-exists? ,(string-append "/proc/" (number->string (getpid)))))
-
-  (test-equal "run-locked passes signals on"
-    (+ 128 SIGTERM)
-    (match (pipe)
-      ((in . out)
-       (flush-all-ports)
-       (match (primitive-fork)
-         (0
-          (close-port in)
-          (dup2 (port->fdes out) 1)
-          (exit-with
-           (lambda ()
-             (set-program-arguments
-              '("guile" "-c"
-                "(begin (write '(ready)) (force-output) (sleep 30))"))
-             (run-locked guile '() #:init tini))))
-         (pid
-          (close-port out)
-          ;; The program is running once it is ready
-          (read in)
-          (kill pid SIGTERM)
-          (status:exit-val (cdr (waitpid pid)))))))))
-
 (define failures (test-runner-fail-count (test-runner-current)))
-(test-end "locked")
+(test-end "unit")
 (exit (zero? failures))

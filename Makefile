@@ -12,15 +12,20 @@ export GUILE_LOAD_PATH := $(CURDIR)/modules$(if $(GUILE_LOAD_PATH),:$(GUILE_LOAD
 repl = paths=$$($(GUIX) build -L $(CURDIR)/modules $(PACKAGES)) && \
 	$(GUIX) repl $$(printf -- '-L %s/share/guile/site/3.0 ' $$paths) -- $(1)
 
-.PHONY: check known-syscalls lint test warnings update
+.PHONY: check known-syscalls lint test test-unit test-kernel warnings update
 
 check: warnings lint test
 
 warnings:
 	$(call repl,etc/check-warnings.scm $(MODULES))
 
-test:
-	$(call repl,tests/locked.scm)
+test: test-unit test-kernel
+
+test-unit:
+	$(call repl,tests/unit.scm)
+
+test-kernel:
+	$(call repl,tests/kernel.scm)
 
 lint:
 	! $(GUIX) lint -L $(CURDIR)/modules --no-network $(PACKAGES) 2>&1 \
