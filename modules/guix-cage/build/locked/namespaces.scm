@@ -28,9 +28,7 @@
 (define %container-grant
   ;; /proc only has the processes of the sandbox.  Writing /proc/PID/mem
   ;; would get past deny-write-execute?.
-  (grant #:files (list (read-access "/proc")
-                       (file-access "/dev/null" '(read write))
-                       (read-access "/dev/urandom"))))
+  (grant #:files (list (read-access "/proc"))))
 
 (define (merge-accesses accesses)
   "Return ACCESSES with one access per file, holding all its permissions."

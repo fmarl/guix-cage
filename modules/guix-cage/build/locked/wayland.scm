@@ -14,7 +14,7 @@
   #:use-module (system foreign)
   #:use-module (system foreign-library)
   #:export (%wayland
-            %full-wayland))
+            %privileged-wayland))
 
 (define (wayland-socket)
   (let ((wayland-display (or (getenv "WAYLAND_DISPLAY") "wayland-0")))
@@ -22,7 +22,7 @@
         wayland-display
         (runtime-path wayland-display))))
 
-(define (%full-wayland command-line)
+(define (%privileged-wayland command-line)
   "Grant the whole compositor, as layer shells such as panels need."
   (socket-grant (wayland-socket)
                  (lambda (socket)

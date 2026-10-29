@@ -2,9 +2,11 @@
 ;;; Copyright © 2026 Florian Marrero Liestmann <f.m.liestmann@fx-ttr.de>
 
 (define-module (guix-cage build locked spawn)
+  #:use-module ((gnu build linux-container) #:select (call-with-container))
   #:use-module (ice-9 match)
   #:use-module (guix-cage build locked process)
   #:export (call-in-child
+            call-in-process
             spawn-detached
             status->exit-code))
 
@@ -39,3 +41,8 @@
   "Return the exit code of a shell for STATUS, from waitpid."
   (or (status:exit-val status)
       (+ 128 (or (status:term-sig status) (status:stop-sig status)))))
+
+(define* (call-in-process thunk #:key (signals '()))
+  (call-with-container '() thunk
+    #:namespaces '()
+    #:relayed-signals signals))

@@ -57,18 +57,18 @@
                        (segment-string bytes segment)))
                 (elf-segments (parse-elf bytes)))))
 
-(define (store-accesses programs executes?)
+(define (store-accesses programs executes-others?)
   "Without EXECUTES?, only PROGRAMS and their interpreters may be
 executed."
-  (if executes?
+  (if executes-others?
       (list (file-access "/gnu/store" '(read execute)))
       (cons (file-access "/gnu/store" '(read load))
             (map (cut file-access <> '(read execute))
                  (delete-duplicates
                   (append programs (append-map elf-interpreters programs)))))))
 
-(define (base-grant programs executes?)
-  (grant #:files (append (store-accesses programs executes?)
+(define (base-grant programs executes-others?)
+  (grant #:files (append (store-accesses programs executes-others?)
                          (list (read-access "/etc")))))
 
 (define (argument-file argument)

@@ -50,7 +50,10 @@
 
 (define %log-abi 7)
 
-(define (enforce-landlock! rules)
+(define (enforce-landlock! rules abi)
+  (when (< (landlock-abi-version) abi)
+    (raise-locked-error "the sandbox needs Landlock ABI ~a, the kernel has ~a"
+                        abi (landlock-abi-version)))
   (let ((status (landlock-restrict!
                  rules
                  #:scope '(signal abstract-unix-socket)

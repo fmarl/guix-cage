@@ -15,6 +15,8 @@
   #:use-module (ice-9 match)
   #:use-module (guix-cage build locked environment)
   #:use-module ((guix-cage build locked errors) #:select (locked-error?))
+  #:use-module ((guix-cage build locked platform)
+                #:select (%supported-systems))
   #:use-module ((guix-cage build locked process)
                 #:select (%default-resource-limits))
   #:use-module ((guix-cage build locked syscalls)
@@ -37,10 +39,11 @@
             locked-command-rules
             locked-command-environment
             locked-command-preserved-environment-variables
-            locked-command-executes?
+            locked-command-executes-others?
+            locked-command-own-namespaces?
             locked-command-deny-write-execute?
             locked-command-resource-limits
-            locked-command-syscall-allowances
+            locked-command-allowed-syscall-groups
             locked-command-program-file
 
             make-locked-package))
@@ -141,7 +144,7 @@ and each constructor of rules, such as (xdg-config name)."
 
 (define-locked-rules (guix-cage build locked wayland)
   %wayland
-  %full-wayland)
+  %privileged-wayland)
 
 (define (validate-rules rules)
   (for-each (lambda (rule)
@@ -193,12 +196,12 @@ POLICY, its options such as --talk=org.freedesktop.Notifications."
        (formatted-message (G_ "invalid resource limits: ~s") invalid)))
     limits))
 
-(define (validate-syscall-allowances allowances)
-  (let ((unknown (remove (cut assq <> %syscall-groups) allowances)))
+(define (validate-allowed-syscall-groups groups)
+  (let ((unknown (remove (cut assq <> %syscall-groups) groups)))
     (unless (null? unknown)
       (raise-exception
        (formatted-message (G_ "unknown system call groups: ~s") unknown)))
-    allowances))
+    groups))
 
 (define-record-type* <locked-command>
   locked-command make-locked-command
@@ -213,21 +216,25 @@ POLICY, its options such as --talk=org.freedesktop.Notifications."
   (preserved-environment-variables
    locked-command-preserved-environment-variables
    (default %default-preserved-environment-variables))
-  (executes?            locked-command-executes?
+  (executes-others?     locked-command-executes-others?
+                        (default #t))
+  (own-namespaces?      locked-command-own-namespaces?
                         (default #t))
   (deny-write-execute?  locked-command-deny-write-execute?
                         (default #f))
   (resource-limits      locked-command-resource-limits ;alist
                         (default %default-resource-limits)
                         (sanitize validate-resource-limits))
-  (syscall-allowances   locked-command-syscall-allowances ;list of groups
-                        (default '())
-                        (sanitize validate-syscall-allowances)))
+  (allowed-syscall-groups
+   locked-command-allowed-syscall-groups
+   (default '())
+   (sanitize validate-allowed-syscall-groups)))
 
 (define (locked-command-program-file command)
   (match-record command <locked-command>
     (name program rules environment preserved-environment-variables
-          executes? deny-write-execute? resource-limits syscall-allowances)
+          executes-others? own-namespaces? deny-write-execute? resource-limits
+          allowed-syscall-groups)
     (program-file
      name
      (with-extensions (list guile-landlock guile-seccomp)
@@ -236,16 +243,20 @@ POLICY, its options such as --talk=org.freedesktop.Notifications."
                                #:select? build-module?)
          #~(begin
              (use-modules (guix-cage build locked))
-             (run-locked #$program (list #$@rules)
-                         #:name #$name
-                         #:init #$(file-append tini "/bin/tini")
-                         #:environment '#$environment
-                         #:preserved-environment-variables
-                         '#$preserved-environment-variables
-                         #:executes? #$executes?
-                         #:deny-write-execute? #$deny-write-execute?
-                         #:resource-limits '#$resource-limits
-                         #:syscall-allowances '#$syscall-allowances)))))))
+             (exit
+              (run-locked #$program (list #$@rules)
+                          #:name #$name
+                          #:init #$(and own-namespaces?
+                                        (file-append tini "/bin/tini"))
+                          #:environment '#$environment
+                          #:preserved-environment-variables
+                          '#$preserved-environment-variables
+                          #:executes-others? #$executes-others?
+                          #:own-namespaces? #$own-namespaces?
+                          #:deny-write-execute? #$deny-write-execute?
+                          #:resource-limits '#$resource-limits
+                          #:allowed-syscall-groups
+                          '#$allowed-syscall-groups))))))))
 
 (define* (make-locked-package original commands
                               #:key (name (string-append (package-name original)
@@ -272,12 +283,14 @@ ORIGINAL."
                   '#$(map locked-command-name commands)
                   (list #$@(map locked-command-program-file commands))))))))
     (inputs (list original))
-    (supported-systems (filter (cut string-suffix? "-linux" <>)
+    (supported-systems (filter (cut member <> %supported-systems)
                                (package-supported-systems original)))
     (home-page (package-home-page original))
     (synopsis (package-synopsis original))
     (description
      (string-append description
-                    "\n\nThis variant runs the program in a sandbox of user \
-namespaces, Landlock and seccomp."))
+                    "\n\nThis variant runs the program in a sandbox of "
+                    (if (every locked-command-own-namespaces? commands)
+                        "user namespaces, Landlock and seccomp."
+                        "Landlock and seccomp.")))
     (license (package-license original))))

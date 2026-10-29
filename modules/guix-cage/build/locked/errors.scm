@@ -23,28 +23,24 @@
   (unless (apply valid? parameters)
     (raise-locked-error "invalid parameters of ~a: ~s" rule parameters)))
 
-(define (system-error? exception)
-  (eq? 'system-error (exception-kind exception)))
-
-(define (system-error-message exception)
+(define (error-message exception)
   (match (exception-args exception)
-    ((subr message arguments . _)
-     (format #f "~a: ~a" subr (apply format #f message arguments)))))
+    ((subr (? string? message) (? list? arguments) . _)
+     (let ((text (apply format #f message arguments)))
+       (if subr (format #f "~a: ~a" subr text) text)))
+    (_ (format #f "~s" exception))))
 
 (define (call-with-error-reporting thunk)
   (define (report message)
     (format (current-error-port) "locked: ~a~%" message)
     ;; In the sandbox, the process ends without flushing
     (force-output (current-error-port))
-    (exit 1))
+    1)
 
   (with-exception-handler
       (lambda (exception)
-        (cond ((locked-error? exception)
-               (report (exception-message exception)))
-              ((system-error? exception)
-               (report (system-error-message exception)))
-              (else
-               (raise-exception exception))))
+        (report (if (locked-error? exception)
+                    (exception-message exception)
+                    (error-message exception))))
     thunk
     #:unwind? #t))
