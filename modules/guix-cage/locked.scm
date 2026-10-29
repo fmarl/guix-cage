@@ -230,6 +230,18 @@ POLICY, its options such as --talk=org.freedesktop.Notifications."
    (default '())
    (sanitize validate-allowed-syscall-groups)))
 
+(define %load-path-without-environment
+  #~(eval-when (expand load eval)
+      (let ((without (lambda (path variable)
+                       (let ((entries (or (and=> (getenv variable) parse-path)
+                                          '())))
+                         (filter (lambda (directory)
+                                   (not (member directory entries)))
+                                 path)))))
+        (set! %load-path (without %load-path "GUILE_LOAD_PATH"))
+        (set! %load-compiled-path
+              (without %load-compiled-path "GUILE_LOAD_COMPILED_PATH")))))
+
 (define (locked-command-program-file command)
   (match-record command <locked-command>
     (name program rules environment preserved-environment-variables
@@ -242,6 +254,7 @@ POLICY, its options such as --talk=org.freedesktop.Notifications."
                                '((guix-cage build locked))
                                #:select? build-module?)
          #~(begin
+             #$%load-path-without-environment
              (use-modules (guix-cage build locked))
              (exit
               (run-locked #$program (list #$@rules)
