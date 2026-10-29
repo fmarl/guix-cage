@@ -29,7 +29,8 @@
 
 (define (%gnupg command-line)
   "Grant a private GnuPG home with the public keyring and the restricted
-socket of gpg-agent, which can't export secret keys."
+socket of gpg-agent, which can't export secret keys, but decrypts and signs
+with them."
   (let* ((home (gnupg-home))
          (directory (make-instance-directory "gnupg"))
          (public (filter file-exists?
