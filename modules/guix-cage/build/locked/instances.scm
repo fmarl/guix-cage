@@ -8,24 +8,48 @@
   #:use-module (ice-9 match)
   #:use-module (guix-cage build locked spawn)
   #:use-module (guix-cage build locked xdg)
+  #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-26)
-  #:export (make-instance-directory))
+  #:export (make-instance-directory
+            retain-instance-only!))
 
 ;;; Directories of the host that belong to a running sandbox.
 
-(define (process-alive? pid)
+(define %held-locks '())
+
+(define (lock-file instance)
+  (string-append instance ".lock"))
+
+(define (open-lock file flags)
+  (open file (logior flags O_NOFOLLOW O_CLOEXEC) #o600))
+
+(define (call-with-lock file thunk)
+  (let ((port (open-lock file (logior O_RDWR O_CREAT))))
+    (dynamic-wind
+      (lambda () (flock port LOCK_EX))
+      thunk
+      (lambda () (close-port port)))))
+
+(define (held? file)
   (catch 'system-error
     (lambda ()
-      (kill pid 0)
-      #t)
+      (let ((port (open-lock file (logior O_RDONLY O_NONBLOCK))))
+        (dynamic-wind
+          (const #t)
+          (lambda () (flock port (logior LOCK_EX LOCK_NB)) #f)
+          (lambda () (close-port port)))))
     (lambda args
-      (not (= ESRCH (system-error-errno args))))))
+      (= EWOULDBLOCK (system-error-errno args)))))
 
-(define (stale-entry? entry)
-  (let ((pid (string->number entry)))
-    (and pid
-         (or (= pid (getpid))
-             (not (process-alive? pid))))))
+(define (instances parent)
+  (delete-duplicates
+   (filter-map (lambda (entry)
+                 (match (if (string-suffix? ".lock" entry)
+                            (string-drop-right entry (string-length ".lock"))
+                            entry)
+                   ((or "" "." "..") #f)
+                   (instance (string-append parent "/" instance))))
+               (or (scandir parent) '()))))
 
 (define %removal '(read-dir remove-file remove-dir))
 
@@ -46,11 +70,26 @@ even through symbolic links that appear meanwhile."
 (define (make-instance-directory name)
   (let ((parent (runtime-path (string-append "locked/" name))))
     (mkdir-p parent)
-    ;; Programs of exited instances may still run and change their entries
-    (match (scandir parent stale-entry?)
-      (() #t)
-      (stale (delete-beneath parent
-                             (map (cut string-append parent "/" <>) stale))))
-    (let ((directory (string-append parent "/" (number->string (getpid)))))
-      (mkdir directory #o700)
-      directory)))
+    (call-with-lock (string-append parent "/.lock")
+      (lambda ()
+        ;; Programs of exited instances may still run and change their
+        ;; entries
+        (match (remove (compose held? lock-file) (instances parent))
+          (() #t)
+          (stale (delete-beneath parent
+                                 (append stale (map lock-file stale)))))
+        (let* ((directory (mkdtemp (string-append parent "/XXXXXX")))
+               (lock (open-lock (lock-file directory)
+                                (logior O_RDWR O_CREAT O_EXCL))))
+          (flock lock LOCK_EX)
+          (set! %held-locks (alist-cons directory lock %held-locks))
+          directory)))))
+
+(define (retain-instance-only! directory)
+  (for-each (match-lambda
+              ((held . lock)
+               (unless (string=? held directory)
+                 (close-port lock))))
+            %held-locks)
+  (set! %held-locks (filter (compose (cut string=? directory <>) car)
+                            %held-locks)))
