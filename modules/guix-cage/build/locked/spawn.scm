@@ -4,10 +4,9 @@
 (define-module (guix-cage build locked spawn)
   #:use-module ((gnu build linux-container) #:select (call-with-container))
   #:use-module (ice-9 match)
-  #:use-module (guix-cage build locked process)
   #:export (call-in-child
             call-in-process
-            spawn-detached
+            call-detached
             status->exit-code))
 
 (define (call-in-child thunk)
@@ -21,16 +20,15 @@
     (pid
      (zero? (status:exit-val (cdr (waitpid pid)))))))
 
-(define (spawn-detached fd program . arguments)
-  "Run PROGRAM detached, with only the standard descriptors and FD."
+(define (call-detached thunk)
+  "Call THUNK detached."
+  (flush-all-ports)
   (match (primitive-fork)
     (0
      (catch #t
        (lambda ()
          (match (primitive-fork)
-           (0
-            (close-on-exec-except (list 0 1 2 fd))
-            (apply execl program program arguments))
+           (0 (thunk))
            (_ #t)))
        (const #f))
      (primitive-_exit 0))
