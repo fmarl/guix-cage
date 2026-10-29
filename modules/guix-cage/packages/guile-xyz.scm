@@ -38,7 +38,7 @@ programs and the programs they execute using Linux's Landlock.")
 (define-public guile-seccomp
   (package
     (name "guile-seccomp")
-    (version "0.1.0")
+    (version "0.1.1")
     (source
      (origin
        (method git-fetch)
@@ -47,7 +47,7 @@ programs and the programs they execute using Linux's Landlock.")
              (commit (string-append "v" version))))
        (file-name (git-file-name name version))
        (sha256
-        (base32 "1vqb4d69dmpcgkqd5kqb9y37wa06w75xm8nyj10liv9vvw60yxzj"))))
+        (base32 "1v540bc7x0d022n5y77bqx6xb2xqlpv167mjlcbiaw45rh7mmzrc"))))
     (build-system guile-build-system)
     (arguments
      (list
