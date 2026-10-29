@@ -2,17 +2,16 @@
 ;;; Copyright © 2026 Florian Marrero Liestmann <f.m.liestmann@fx-ttr.de>
 
 (define-module (guix-cage build locked process)
-  #:use-module (ice-9 ftw)
   #:use-module (ice-9 match)
   #:use-module (ice-9 textual-ports)
   #:use-module (guix-cage build locked errors)
   #:use-module (srfi srfi-1)
-  #:use-module (srfi srfi-26)
   #:use-module (system foreign)
   #:use-module (system foreign-library)
   #:export (inherit-across-exec!
             close-on-exec-except
             deny-write-execute!
+            die-with-parent!
             %default-resource-limits
             apply-resource-limits!
             terminal-injection-possible?))
@@ -21,11 +20,26 @@
   ;; Revealed descriptors stay open across exec
   (port->fdes port))
 
+(define %close-range-cloexec 4)
+
+(define close-range
+  (delay (foreign-library-function #f "close_range"
+                                   #:return-type int
+                                   #:arg-types (list unsigned-int unsigned-int
+                                                     int)
+                                   #:return-errno? #t)))
+
 (define (close-on-exec-except keep)
+  (call-with-values
+      (lambda ()
+        ((force close-range) 0 #xffffffff %close-range-cloexec))
+    (lambda (result errno)
+      (when (< result 0)
+        (raise-locked-error "cannot close descriptors on exec: ~a"
+                            (strerror errno)))))
   (for-each (lambda (fd)
-              (false-if-exception (fcntl fd F_SETFD FD_CLOEXEC)))
-            (remove (cut memv <> keep)
-                    (filter-map string->number (scandir "/proc/self/fd")))))
+              (false-if-exception (fcntl fd F_SETFD 0)))
+            keep))
 
 (define %pr-set-mdwe 65)
 (define %pr-mdwe-refuse-exec-gain 1)
@@ -39,14 +53,24 @@
                                                      unsigned-long)
                                    #:return-errno? #t)))
 
-(define (deny-write-execute!)
+(define %pr-set-pdeathsig 1)
+
+(define (prctl! option argument action)
   (call-with-values
       (lambda ()
-        ((force prctl) %pr-set-mdwe %pr-mdwe-refuse-exec-gain 0 0 0))
+        ((force prctl) option argument 0 0 0))
     (lambda (result errno)
       (when (< result 0)
-        (raise-locked-error "cannot deny writable executable memory: ~a"
-                            (strerror errno))))))
+        (raise-locked-error "cannot ~a: ~a" action (strerror errno))))))
+
+(define (deny-write-execute!)
+  (prctl! %pr-set-mdwe %pr-mdwe-refuse-exec-gain
+          "deny writable executable memory"))
+
+(define (die-with-parent! parent)
+  (prctl! %pr-set-pdeathsig SIGKILL "die with the parent")
+  (unless (= (getppid) parent)
+    (raise-locked-error "the parent process has ended")))
 
 (define %default-resource-limits
   '((core . 0) (rtprio . 0) (nice . 0)))
