@@ -669,6 +669,11 @@ returns STATUS."
        (list (container-sandbox %no-grant '("/bin/true"))
              (host-sandbox %no-grant '("/bin/true")))))
 
+(test-locked-error "user namespaces rule out deny-write-execute?"
+  (container-sandbox %no-grant '("/bin/true")
+                     #:allowed-syscall-groups '(user-namespaces)
+                     #:deny-write-execute? #t))
+
 (test-equal "sandboxes pass on the signals of the terminal in a new session"
   (list (list SIGTERM) (list SIGINT SIGQUIT SIGTERM SIGHUP))
   (map (lambda (new-session?)

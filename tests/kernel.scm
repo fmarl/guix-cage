@@ -330,6 +330,40 @@ until then, as unshare needs."
        (restrict-to-known! (delete 'getppid %known-syscalls))
        (map errno-in-new-child '((getpid) (getppid)))))))
 
+(define (errno-mapping-own-id)
+  "Return the errno of mapping the user ID in a new user namespace of a new
+child process, or 0."
+  (let ((uid (getuid)))
+    (match (primitive-fork)
+      (0 (primitive-_exit
+          (match (syscall 'unshare %clone-newuser)
+            (0 (catch 'system-error
+                 (lambda ()
+                   (let ((port (open "/proc/self/uid_map" O_WRONLY)))
+                     (format port "~a ~a 1" uid uid)
+                     (close-port port)
+                     0))
+                 (lambda args
+                   (system-error-errno args))))
+            (errno errno))))
+      (pid (status:exit-val (cdr (waitpid pid)))))))
+
+(unless (feature-available? (unprivileged-user-namespace-supported?)
+                            "user namespaces")
+  (test-skip "container-sandbox lets programs map IDs in user namespaces"))
+
+(test-equal "container-sandbox lets programs map IDs in user namespaces"
+  (list 0 EACCES)
+  (map (lambda (groups)
+         (let ((sandbox (container-sandbox %no-grant '("/bin/true")
+                                           #:allowed-syscall-groups groups)))
+           (in-child
+            (lambda ()
+              (enforce-landlock! (sandbox-landlock-rules sandbox)
+                                 (sandbox-landlock-abi sandbox))
+              (errno-mapping-own-id)))))
+       '((user-namespaces) ())))
+
 (define (guile-script expression)
   (object->string `(exit (if ,expression 42 43))))
 

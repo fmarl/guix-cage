@@ -58,6 +58,10 @@
   (grant #:files (list (file-access "/dev/null" '(read write))
                        (read-access "/dev/urandom"))))
 
+(define %user-namespace-grant
+  ;; For /proc/self/uid_map, which Landlock can't grant alone
+  (grant #:files (list (file-access "/proc" '(read write)))))
+
 (define* (make-sandbox* grant command namespaces file-systems links
                         #:key environment directory allowed-syscall-groups
                         resource-limits deny-write-execute? new-session?)
@@ -89,7 +93,18 @@
   "Return the sandbox that enforces GRANT for COMMAND, a list of a program and
 its arguments, in namespaces of its own.  LINKS are the symbolic links it
 needs besides those into the store."
-  (let ((grant (grant-append %device-grant %container-grant grant)))
+  (define user-namespaces?
+    (memq 'user-namespaces allowed-syscall-groups))
+
+  (when (and user-namespaces? deny-write-execute?)
+    (raise-locked-error
+     "with user namespaces, writing /proc/self/mem gets past \
+deny-write-execute?"))
+  (let ((grant (grant-append %device-grant %container-grant
+                             (if user-namespaces?
+                                 %user-namespace-grant
+                                 %no-grant)
+                             grant)))
     (make-sandbox* grant command
                    `(user mnt pid ipc uts cgroup
                           ;; Ports are on the network of the host

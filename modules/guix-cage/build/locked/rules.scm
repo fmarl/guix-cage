@@ -25,6 +25,7 @@
             %shm
             %dns
             %pipewire
+            %pulseaudio
             %runtime-directory
             %temporary-directory
             %shared-temporary-directory
@@ -219,6 +220,11 @@ or overlaps those of configurations, secrets or the system."
                 (lambda (socket)
                   `(("PIPEWIRE_RUNTIME_DIR" . ,(dirname socket))
                     ("PIPEWIRE_REMOTE" . ,(basename socket))))))
+
+(define (%pulseaudio command-line)
+  (socket-grant (runtime-path "pulse/native")
+                (lambda (socket)
+                  `(("PULSE_SERVER" . ,(string-append "unix:" socket))))))
 
 (define (private-directory directory)
   (grant #:files (list (file-access directory '(read write) #:private? #t))))

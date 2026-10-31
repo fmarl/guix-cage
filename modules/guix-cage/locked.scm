@@ -125,6 +125,7 @@ and each constructor of rules, such as (xdg-config name)."
   %shm
   %dns
   %pipewire
+  %pulseaudio
   %runtime-directory
   %temporary-directory
   %shared-temporary-directory
